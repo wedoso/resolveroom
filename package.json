@@ -24,6 +24,8 @@
     "db:migrate:remote": "npm run deploy:config && wrangler d1 migrations apply resolveroom --remote --config wrangler.deploy.toml",
     "seed": "tsx scripts/seed.ts",
     "demo": "tsx scripts/demo.ts",
+    "agent": "tsx scripts/resolveroom-agent.ts",
+    "agent:configure": "bash scripts/configure-resolveroom-agent.sh",
     "video:preview": "remotion studio media/remotion/index.tsx --public-dir=docs/assets",
     "video:render": "remotion render media/remotion/index.tsx ResolveRoomWalkthrough docs/assets/resolveroom-walkthrough.mp4 --public-dir=docs/assets --codec=h264 --crf=18",
     "deploy:config": "node scripts/prepare-deploy-config.mjs",

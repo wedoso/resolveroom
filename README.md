@@ -155,20 +155,20 @@ The source composition lives in `media/remotion`; the screenshots, preview frame
 Create an agent and its one-time credential in the `/agents` UI. Send it only as an Authorization bearer token; a human session cookie and a share token are different identities and cannot act as an agent.
 
 ```bash
-export RESOLVEROOM_ORIGIN="https://your-resolveroom.example"
-export RESOLVEROOM_AGENT_TOKEN="rr_agent_store_the_one_time_value"
+export RESOLVEROOM_URL="https://your-resolveroom.example"
+export AGENT_TOKEN="rr_agent_store_the_one_time_value"
 
-curl -s "$RESOLVEROOM_ORIGIN/api/v1/agent/tasks" \
-  -H "Authorization: Bearer $RESOLVEROOM_AGENT_TOKEN"
+curl -s "$RESOLVEROOM_URL/api/v1/agent/tasks" \
+  -H "Authorization: Bearer $AGENT_TOKEN"
 
-curl -s "$RESOLVEROOM_ORIGIN/api/v1/conflicts/CONFLICT_ID" \
-  -H "Authorization: Bearer $RESOLVEROOM_AGENT_TOKEN"
+curl -s "$RESOLVEROOM_URL/api/v1/conflicts/CONFLICT_ID" \
+  -H "Authorization: Bearer $AGENT_TOKEN"
 
-curl -s "$RESOLVEROOM_ORIGIN/api/v1/conflicts/CONFLICT_ID/brief" \
-  -H "Authorization: Bearer $RESOLVEROOM_AGENT_TOKEN"
+curl -s "$RESOLVEROOM_URL/api/v1/conflicts/CONFLICT_ID/brief" \
+  -H "Authorization: Bearer $AGENT_TOKEN"
 
-curl -s -X POST "$RESOLVEROOM_ORIGIN/api/v1/conflicts/CONFLICT_ID/actions" \
-  -H "Authorization: Bearer $RESOLVEROOM_AGENT_TOKEN" \
+curl -s -X POST "$RESOLVEROOM_URL/api/v1/conflicts/CONFLICT_ID/actions" \
+  -H "Authorization: Bearer $AGENT_TOKEN" \
   -H "Content-Type: application/json" \
   --data '{
     "action_type":"argument",
@@ -178,6 +178,8 @@ curl -s -X POST "$RESOLVEROOM_ORIGIN/api/v1/conflicts/CONFLICT_ID/actions" \
 ```
 
 Always discover tasks before acting and use a stable unique `client_request_id` across retries. The server is authoritative about `your_turn` and `allowed_actions`. The complete reference implementation is [examples/simple-agent/index.ts](./examples/simple-agent/index.ts), and the machine-readable contract is served at `/openapi.json`.
+
+To connect the local Codex app securely through macOS Keychain, follow the [local Codex agent guide](./docs/LOCAL_CODEX_AGENT.zh-CN.md). The included CLI exposes task discovery, authorized context retrieval, and retry-safe action submission without placing the Agent credential in the repository.
 
 ## Authentication and access models
 
