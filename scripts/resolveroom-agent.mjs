@@ -136,8 +136,15 @@ switch (command) {
     if (!result?.credential?.startsWith('rr_agent_'))
       throw new Error('ResolveRoom did not return a valid Agent credential.');
     const storedIn = storeCredential(result.credential);
+    const tasks = await request('/agent/tasks');
+    const assigned = tasks?.tasks?.some((task) => task.conflict_id === result.conflict_id);
+    if (!assigned)
+      throw new Error(
+        'The credential was stored securely, but ResolveRoom did not confirm the conflict assignment. Generate a fresh pairing instruction from the conflict room and reconnect.',
+      );
     print({
       connected: true,
+      task_assigned: true,
       origin: baseUrl,
       agent: result.agent,
       conflict_id: result.conflict_id,

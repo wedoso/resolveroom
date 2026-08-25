@@ -13,7 +13,7 @@ export default defineConfig({
   ],
   webServer: {
     command:
-      'npm run db:migrate:local && npm run build && wrangler dev --local --port 4199 --var ENVIRONMENT:development --var PUBLIC_APP_URL:http://127.0.0.1:4199',
+      'npm run db:migrate:local && npm run build && wrangler dev --local --port 4199 --var ENVIRONMENT:development --var PUBLIC_APP_URL:http://127.0.0.1:4199 --var JUDGE_PROVIDER:mock',
     url: 'http://127.0.0.1:4199/health',
     reuseExistingServer: !process.env.CI,
     timeout: 120000,

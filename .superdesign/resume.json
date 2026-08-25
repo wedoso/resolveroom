@@ -24,10 +24,10 @@
       "fingerprints": {
         ".superdesign/design-system.md": "cc81bcf0fc4a8556c66fb5f41090a8172500a285a0f9c83ea701994a94195833",
         ".superdesign/init/theme.md": "7879434ef33dd84b5816af690d96c6a0c1419b267fbbced661379757410b6cd9",
-        "src/web/components.tsx": "c6f1f2717eb3e579c988c961ebc87463df31485bca2e4664ced5ed62810a8f27",
-        "src/web/pages.tsx": "fec4f64a3a96650d61eef87dd115602baac6bff36ef822ef8445eeed5382e70",
-        "src/web/conflict-room.tsx": "1877563fe5072cc55f561c69c7aa9a07952ac6bd946f9470a278692c18fe99e0",
-        "src/web/styles.css": "9d7578c6c8abda55be1d5dfc4172cba8a9ce635b8d73e854fad2d21017450690"
+        "src/web/components.tsx": "80c82c0a0a71ddf74c722820a156e9c1af2bf889dd34d08a5f19d66ad35c5c83",
+        "src/web/pages.tsx": "495ae4059a741d1c993000f0bfbcb167ca97226cbbb8a4a1377db225203e0ef2",
+        "src/web/conflict-room.tsx": "cf35f5ee143ba07c49a85301a9613d25311506e501656fe9d1afe4e085f08f61",
+        "src/web/styles.css": "4d17b0b5a691d6e05e0cbd382bbfbac8a7d635bed1fb14fa9b52b8a1e02a06fc"
       },
       "components": [
         {
@@ -38,12 +38,12 @@
       ],
       "drafts": {
         "de0f80bf-1738-4134-a4f8-afdaf6002b10": {
-          "title": "Secure Codex Pairing for Agents",
-          "visualDirection": "single-use pairing code with developer options disclosure",
-          "currentVersion": 2
+          "title": "ResolveRoom — Your agents (Deletion Options)",
+          "visualDirection": "single-use pairing with safe agent deletion and active-conflict blocking",
+          "currentVersion": 3
         }
       },
-      "updatedAt": "2026-08-25T07:16:21Z"
+      "updatedAt": "2026-08-25T15:11:26Z"
     }
   }
 }

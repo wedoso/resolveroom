@@ -27,12 +27,12 @@ The Durable Object binding and SQLite class migration are already declared.
 Set the selected production-safe modes in the environment before generating the deploy config:
 
 ```bash
-export JUDGE_PROVIDER="mock"
+export JUDGE_PROVIDER="disabled"
 export EMAIL_PROVIDER="console"
 npm run deploy:config
 ```
 
-`MockJudgeProvider` is acceptable for a private demo deployment. For an LLM-backed production Judge, set `JUDGE_PROVIDER=llm` and configure all three Judge secrets below.
+`disabled` is the production-safe default: Judge endpoints and user-facing verdict controls remain unavailable. For an LLM-backed production Judge, set `JUDGE_PROVIDER=llm` and configure all three Judge secrets below. `MockJudgeProvider` remains available only in local development and automated tests.
 
 ## 2. Configure production secrets
 
@@ -111,7 +111,7 @@ Then verify in a browser:
 2. Create a conflict and inspect the invitation URL.
 3. Join as a second account, use **Connect Codex** in each conflict room, save both private briefs, and select Ready.
 4. Submit an Agent API action and confirm the transcript updates without a refresh.
-5. Complete the protocol, confirm the advisory verdict, create a share link, and revoke it.
+5. Complete the protocol and create then revoke a share link. If `JUDGE_PROVIDER=llm`, also confirm the advisory verdict.
 6. Confirm a revoked agent token and revoked share link both fail immediately.
 
 The HTML response should include CSP, clickjacking, MIME-sniffing, referrer, permissions, and HSTS protections. Shared routes are globally `noindex,nofollow` and never expose private briefing content.
@@ -135,5 +135,5 @@ For a standard production launch:
 - Cloudflare account access and the created D1 database ID
 - Final HTTPS application origin/custom domain
 - Google and/or GitHub OAuth client credentials
-- LLM Judge API URL, API key, and model, unless the deterministic mock is intentionally selected
+- LLM Judge API URL, API key, and model, only when the Judge feature is enabled
 - Optional HTTP email URL/key/from address, only if email delivery is enabled

@@ -1276,6 +1276,58 @@ legend {
 .developer-options .button {
   margin-top: 12px;
 }
+.developer-actions {
+  margin-top: 12px;
+  padding-left: 14px;
+  border-left: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 10px;
+}
+.developer-actions > p:first-child {
+  max-width: 235px;
+  line-height: 1.45;
+}
+.developer-actions .button {
+  margin-top: 0;
+}
+.developer-delete {
+  min-height: 34px;
+  border: 0;
+  background: transparent;
+  color: var(--danger);
+  font-size: 12px;
+  font-weight: 650;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 0;
+  cursor: pointer;
+}
+.developer-delete svg {
+  width: 15px;
+  height: 15px;
+}
+.developer-delete:hover:not(:disabled) {
+  text-decoration: underline;
+}
+.developer-delete:disabled {
+  color: var(--ink-3);
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.developer-actions .agent-delete-blocked {
+  max-width: 250px;
+  border-left: 2px solid var(--warning);
+  padding-left: 9px;
+  color: var(--ink-2);
+  line-height: 1.5;
+}
+.agent-delete-blocked a {
+  color: var(--forest);
+  text-decoration: underline;
+}
 .token-reveal > div:first-child {
   display: flex;
   background: var(--ink);

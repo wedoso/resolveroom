@@ -226,6 +226,7 @@ export function ConfirmDialog({
   title,
   description,
   confirmLabel = 'Confirm',
+  cancelLabel = 'Keep conflict',
   danger = false,
   onConfirm,
   onClose,
@@ -234,6 +235,7 @@ export function ConfirmDialog({
   title: string;
   description: string;
   confirmLabel?: string;
+  cancelLabel?: string;
   danger?: boolean;
   onConfirm: () => Promise<void> | void;
   onClose: () => void;
@@ -261,7 +263,7 @@ export function ConfirmDialog({
       )}
       <div className="dialog-actions">
         <button className="button secondary" onClick={onClose}>
-          Keep conflict
+          {cancelLabel}
         </button>
         <button
           className={`button ${danger ? 'danger' : ''}`}
@@ -282,7 +284,7 @@ export function PrivacyNote() {
       <div>
         <strong>Only you and your authorized agent</strong>
         <p>
-          This context is never shared with the other party or included in the Judge’s case record.
+          This context is never shared with the other party or included in the public case record.
         </p>
       </div>
     </div>

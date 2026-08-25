@@ -37,18 +37,29 @@ function provider(env: Env): JudgeProvider {
       throw new Error('JUDGE_PROVIDER=llm requires JUDGE_API_URL, JUDGE_API_KEY, and JUDGE_MODEL.');
     return new LLMJudgeProvider(env.JUDGE_API_URL, env.JUDGE_API_KEY, env.JUDGE_MODEL);
   }
-  return new MockJudgeProvider();
+  if (env.JUDGE_PROVIDER === 'mock' && env.ENVIRONMENT !== 'production')
+    return new MockJudgeProvider();
+  throw new Error('The Judge provider is disabled.');
 }
+
+const judgeEnabled = (env: Env) =>
+  env.JUDGE_PROVIDER === 'llm' ||
+  (env.JUDGE_PROVIDER === 'mock' && env.ENVIRONMENT !== 'production');
 
 function apiOptions(env: Env) {
   const oauth: any = {};
+  const judgeMode: 'disabled' | 'mock' | 'llm' = judgeEnabled(env)
+    ? (env.JUDGE_PROVIDER as 'mock' | 'llm')
+    : 'disabled';
   if (env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET)
     oauth.google = { clientId: env.GOOGLE_CLIENT_ID, clientSecret: env.GOOGLE_CLIENT_SECRET };
   if (env.GITHUB_CLIENT_ID && env.GITHUB_CLIENT_SECRET)
     oauth.github = { clientId: env.GITHUB_CLIENT_ID, clientSecret: env.GITHUB_CLIENT_SECRET };
   return {
     allowDevelopmentAuth: env.ENVIRONMENT !== 'production',
-    judgeProvider: provider(env),
+    judgeEnabled: judgeEnabled(env),
+    judgeMode,
+    judgeProvider: judgeEnabled(env) ? provider(env) : undefined,
     appUrl: env.PUBLIC_APP_URL,
     secureCookies: env.ENVIRONMENT === 'production',
     oauth,
@@ -115,7 +126,7 @@ export class ConflictRoom implements DurableObject {
     const conflictId = await this.state.storage.get<string>('conflictId');
     if (!conflictId) return;
     const result = await conflicts.handleAlarm(conflictId);
-    if (result.needsJudging)
+    if (judgeEnabled(this.env) && result.needsJudging)
       await new JudgeService(
         db,
         provider(this.env),

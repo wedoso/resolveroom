@@ -131,6 +131,17 @@ export class MemoryDatabase implements Database {
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
       .map((value) => structuredClone(value));
   }
+  async listConflictsForAgent(agentId: string) {
+    const ids = new Set(
+      [...this.parties.values()]
+        .filter((party) => party.agentId === agentId)
+        .map((party) => party.conflictId),
+    );
+    return [...this.conflicts.values()]
+      .filter((conflict) => ids.has(conflict.id))
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+      .map((value) => structuredClone(value));
+  }
   async getParties(conflictId: string) {
     return [...this.parties.values()]
       .filter((party) => party.conflictId === conflictId)
@@ -198,8 +209,29 @@ export class MemoryDatabase implements Database {
   }
   async listAgents(userId: string) {
     return [...this.agents.values()]
-      .filter((agent) => agent.ownerUserId === userId)
+      .filter((agent) => agent.ownerUserId === userId && agent.status === 'active')
       .map((value) => structuredClone(value));
+  }
+  async revokeAgent(agentId: string, ownerUserId: string) {
+    const agent = this.agents.get(agentId);
+    if (!agent || agent.ownerUserId !== ownerUserId || agent.status !== 'active')
+      return { status: 'not_found' } as const;
+    const boundParties = [...this.parties.values()].filter((party) => party.agentId === agentId);
+    const protectedConflict = boundParties
+      .map((party) => this.conflicts.get(party.conflictId))
+      .find((conflict) => conflict && ['active', 'paused', 'judging'].includes(conflict.status));
+    if (protectedConflict) return { status: 'in_use', conflictId: protectedConflict.id } as const;
+    const revokedAt = new Date().toISOString();
+    this.agents.set(agentId, { ...agent, status: 'revoked', updatedAt: revokedAt });
+    for (const party of boundParties)
+      this.parties.set(party.id, { ...party, agentId: null, ready: false });
+    for (const [id, token] of this.tokens)
+      if (token.agentId === agentId)
+        this.tokens.set(id, { ...token, revokedAt: token.revokedAt ?? revokedAt });
+    for (const [id, pairing] of this.pairings)
+      if (pairing.agentId === agentId && !pairing.claimedAt && !pairing.revokedAt)
+        this.pairings.set(id, { ...pairing, revokedAt });
+    return { status: 'revoked', unboundParties: structuredClone(boundParties) } as const;
   }
   async createAgentToken(token: AgentToken) {
     this.tokens.set(token.id, structuredClone(token));
@@ -253,6 +285,13 @@ export class MemoryDatabase implements Database {
       agent?.status !== 'active'
     )
       return null;
+    if (!pairing.conflictId) return null;
+    const ownerParty = [...this.parties.values()].find(
+      (party) => party.conflictId === pairing.conflictId && party.userId === agent.ownerUserId,
+    );
+    if (!ownerParty || (ownerParty.agentId && ownerParty.agentId !== pairing.agentId)) return null;
+    if (!ownerParty.agentId)
+      this.parties.set(ownerParty.id, { ...ownerParty, agentId: pairing.agentId, ready: false });
     const claimed = { ...pairing, claimedAt: now.toISOString(), clientName };
     this.pairings.set(id, claimed);
     this.tokens.set(token.id, structuredClone({ ...token, agentId: pairing.agentId }));

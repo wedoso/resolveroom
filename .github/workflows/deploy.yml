@@ -29,7 +29,7 @@ jobs:
       CLOUDFLARE_D1_DATABASE_ID: ${{ vars.CLOUDFLARE_D1_DATABASE_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       PUBLIC_APP_URL: ${{ vars.PUBLIC_APP_URL }}
-      JUDGE_PROVIDER: ${{ vars.JUDGE_PROVIDER || 'mock' }}
+      JUDGE_PROVIDER: ${{ vars.JUDGE_PROVIDER || 'disabled' }}
       EMAIL_PROVIDER: ${{ vars.EMAIL_PROVIDER || 'console' }}
       GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
       GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}

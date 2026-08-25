@@ -11,6 +11,7 @@ import {
   Plus,
   ShieldCheck,
   Sparkles,
+  Trash2,
   UsersRound,
 } from 'lucide-react';
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
@@ -19,6 +20,7 @@ import { api, relativeTime } from './api';
 import {
   AppShell,
   Brand,
+  ConfirmDialog,
   Dialog,
   PageLoading,
   SignInForm,
@@ -29,6 +31,12 @@ import {
 
 export function LandingPage() {
   const { user } = useAuth();
+  const [judgeAvailable, setJudgeAvailable] = useState(false);
+  useEffect(() => {
+    api<any>('/capabilities')
+      .then((value) => setJudgeAvailable(Boolean(value.judge?.available)))
+      .catch(() => setJudgeAvailable(false));
+  }, []);
   return (
     <div className="landing">
       <header className="marketing-nav">
@@ -66,7 +74,7 @@ export function LandingPage() {
             </h1>
             <p>
               ResolveRoom gives two people a neutral, private place where their agents can debate or
-              persuade under a clear protocol—and produce a transparent, reviewable verdict.
+              persuade under a clear protocol—and produce a transparent, reviewable record.
             </p>
             <div className="hero-actions">
               <Link className="button large" to={user ? '/conflicts/new' : '/signin'}>
@@ -82,7 +90,7 @@ export function LandingPage() {
               Agents can work asynchronously
             </div>
           </div>
-          <CasePreview />
+          <CasePreview judgeAvailable={judgeAvailable} />
         </section>
         <section id="how" className="how-section">
           <div className="section-intro">
@@ -109,8 +117,12 @@ export function LandingPage() {
             <Step
               n="03"
               icon={<Sparkles />}
-              title="Review the verdict"
-              text="A neutral Judge produces a validated, advisory assessment with cited moments from the record."
+              title={judgeAvailable ? 'Review the verdict' : 'Keep the record'}
+              text={
+                judgeAvailable
+                  ? 'A neutral Judge produces a validated, advisory assessment with cited moments from the record.'
+                  : 'Return to a durable, permission-filtered transcript after the agents complete their exchange.'
+              }
             />
           </div>
         </section>
@@ -120,8 +132,7 @@ export function LandingPage() {
             <h2>Your private context stays on your side of the room.</h2>
             <p>
               Private briefs are permission-isolated from the opposing participant, opposing agent,
-              observers, and the Judge. Sharing is always explicit, unlisted, read-only, and
-              revocable.
+              and observers. Sharing is always explicit, unlisted, read-only, and revocable.
             </p>
             <Link className="text-link arrow" to="/signin">
               Start a private room <ArrowRight />
@@ -150,7 +161,7 @@ export function LandingPage() {
     </div>
   );
 }
-function CasePreview() {
+function CasePreview({ judgeAvailable }: { judgeAvailable: boolean }) {
   return (
     <div className="case-preview" aria-label="Example active conflict">
       <div className="preview-head">
@@ -178,7 +189,7 @@ function CasePreview() {
         <span className="done">Opening</span>
         <span className="current">Rebuttal</span>
         <span>Closing</span>
-        <span>Verdict</span>
+        {judgeAvailable && <span>Verdict</span>}
       </div>
       <div className="preview-record">
         <article className="a">
@@ -399,11 +410,15 @@ function ConflictCard({ conflict: c }: { conflict: any }) {
       <div className="conflict-next">
         <span>
           {c.status === 'resolved'
-            ? 'Assessment ready'
+            ? c.judge_available
+              ? 'Assessment ready'
+              : 'Exchange complete'
             : attention
               ? 'Your agent’s turn'
               : c.status === 'judging'
-                ? 'Judge evaluating'
+                ? c.judge_available
+                  ? 'Judge evaluating'
+                  : 'Exchange complete'
                 : c.status === 'inviting'
                   ? 'Invitation pending'
                   : `Waiting for ${c.opponent.display_name}`}
@@ -496,7 +511,7 @@ export function NewConflictPage() {
                   <UsersRound />
                   <strong>Debate</strong>
                   <small>
-                    Both agents advocate their side. The Judge assesses which case was stronger.
+                    Both agents advocate their side in a structured, reviewable exchange.
                   </small>
                 </span>
               </label>
@@ -658,9 +673,13 @@ export function AgentsPage() {
   const [error, setError] = useState('');
   const [createOpen, setCreateOpen] = useState(false);
   const [token, setToken] = useState<any>(null);
+  const [deleteTarget, setDeleteTarget] = useState<any>(null);
   const load = () =>
     api<any>('/agents')
-      .then((v) => setAgents(v.agents))
+      .then((v) => {
+        setAgents(v.agents);
+        setError('');
+      })
       .catch((e) => setError(e.message));
   useEffect(() => {
     void load();
@@ -673,6 +692,12 @@ export function AgentsPage() {
       body: JSON.stringify({ name: form.get('name') }),
     });
     setCreateOpen(false);
+    await load();
+  };
+  const remove = async () => {
+    if (!deleteTarget) return;
+    await api(`/agents/${deleteTarget.id}`, { method: 'DELETE' });
+    setDeleteTarget(null);
     await load();
   };
   if (!agents && !error)
@@ -739,19 +764,39 @@ export function AgentsPage() {
                 </div>
                 <details className="agent-actions developer-options">
                   <summary>Developer options</summary>
-                  <button
-                    className="button secondary"
-                    onClick={async () => {
-                      const value = await api<any>(`/agents/${agent.id}/tokens/rotate`, {
-                        method: 'POST',
-                        body: '{}',
-                      });
-                      setToken(value.token);
-                    }}
-                  >
-                    <KeyRound />
-                    Issue / rotate API credential
-                  </button>
+                  <div className="developer-actions">
+                    <p>Raw credentials are only for custom agent runtimes.</p>
+                    <button
+                      className="button secondary"
+                      onClick={async () => {
+                        const value = await api<any>(`/agents/${agent.id}/tokens/rotate`, {
+                          method: 'POST',
+                          body: '{}',
+                        });
+                        setToken(value.token);
+                      }}
+                    >
+                      <KeyRound />
+                      Issue / rotate API credential
+                    </button>
+                    <button
+                      className="developer-delete"
+                      disabled={agent.deletion_blocked}
+                      onClick={() => setDeleteTarget(agent)}
+                    >
+                      <Trash2 />
+                      Delete agent
+                    </button>
+                    {agent.deletion_blocked && (
+                      <p className="agent-delete-blocked">
+                        Cannot delete while assigned to{' '}
+                        <Link to={`/conflicts/${agent.active_conflict.id}`}>
+                          {agent.active_conflict.title}
+                        </Link>
+                        . Resolve or cancel that conflict first.
+                      </p>
+                    )}
+                  </div>
                 </details>
               </article>
             ))}
@@ -806,6 +851,16 @@ export function AgentsPage() {
             </div>
           )}
         </Dialog>
+        <ConfirmDialog
+          open={Boolean(deleteTarget)}
+          title={`Delete ${deleteTarget?.name ?? 'agent'}?`}
+          description="All API credentials and pending pairing codes will be revoked immediately, and the agent will be removed from pending conflicts. This action cannot be undone."
+          confirmLabel="Delete agent"
+          cancelLabel="Keep agent"
+          danger
+          onClose={() => setDeleteTarget(null)}
+          onConfirm={remove}
+        />
       </main>
     </AppShell>
   );
@@ -835,7 +890,7 @@ export function NotificationsPage() {
         </div>
         {data.length === 0 ? (
           <StatePanel title="You’re all caught up">
-            <p>New invitations, turns, pauses, and verdicts will appear here.</p>
+            <p>New invitations, turns, pauses, and completed outcomes will appear here.</p>
           </StatePanel>
         ) : (
           <div className="notification-list">
@@ -925,7 +980,7 @@ export function SharePage() {
           <div>
             <strong>This is a permission-filtered observer record.</strong>
             <p>
-              Private briefs, Judge-only submissions, email addresses, and API credentials are never
+              Private briefs, restricted records, email addresses, and API credentials are never
               included.
             </p>
           </div>
@@ -933,7 +988,11 @@ export function SharePage() {
       </main>
       <footer>
         <Brand />
-        <p>AI-generated assessments are advisory and non-binding.</p>
+        <p>
+          {data.verdict
+            ? 'AI-generated assessments are advisory and non-binding.'
+            : 'Observer records are read-only and permission-filtered.'}
+        </p>
       </footer>
     </div>
   );

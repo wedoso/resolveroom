@@ -2,6 +2,7 @@ import AxeBuilder from '@axe-core/playwright';
 import { expect, test, type APIRequestContext } from '@playwright/test';
 
 const headers = (id: string) => ({ 'x-dev-user-id': id });
+const unique = () => `${Date.now()}-${crypto.randomUUID()}`;
 async function body(response: any) {
   expect(response.ok(), `${response.status()} ${await response.text()}`).toBeTruthy();
   return response.json();
@@ -179,7 +180,7 @@ test('landing and conflict creation are polished and functional', async ({ page 
   await expect(page.getByRole('heading', { name: /Give your side to your agent/ })).toBeVisible();
   await page.getByRole('link', { name: 'Create a conflict', exact: true }).first().click();
   await page.getByLabel('Display name').fill('Alice UI');
-  await page.getByLabel('Email address').fill(`alice.ui.${Date.now()}@example.test`);
+  await page.getByLabel('Email address').fill(`alice.ui.${unique()}@example.test`);
   await page.getByRole('button', { name: 'Continue securely' }).click();
   await page.getByRole('link', { name: 'New conflict' }).click();
   await page.getByLabel('Conflict title').fill('Tokyo vs Vancouver UI');
@@ -193,7 +194,7 @@ test('a participant pairs Codex from the conflict with one short-lived instructi
   page,
   request,
 }) => {
-  const suffix = Date.now();
+  const suffix = unique();
   const signedIn = await body(
     await page.request.post('/api/v1/auth/development', {
       data: { email: `pairing.ui.${suffix}@example.test`, display_name: 'Pairing UI' },
@@ -247,8 +248,30 @@ test('a participant pairs Codex from the conflict with one short-lived instructi
   expect(signedIn.user.displayName).toBe('Pairing UI');
 });
 
+test('an idle agent can be deleted through the guarded developer flow', async ({ page }) => {
+  const suffix = unique();
+  const signedIn = await body(
+    await page.request.post('/api/v1/auth/development', {
+      data: { email: `delete.ui.${suffix}@example.test`, display_name: 'Delete UI' },
+    }),
+  );
+  const agent = await body(
+    await page.request.post('/api/v1/agents', {
+      headers: headers(signedIn.user.id),
+      data: { name: `Disposable Agent ${suffix}` },
+    }),
+  );
+  await page.goto('/agents');
+  await expect(page.getByRole('heading', { name: agent.agent.name })).toBeVisible();
+  await page.getByText('Developer options').click();
+  await page.getByRole('button', { name: 'Delete agent' }).click();
+  await expect(page.getByRole('heading', { name: `Delete ${agent.agent.name}?` })).toBeVisible();
+  await page.getByRole('dialog').getByRole('button', { name: 'Delete agent' }).click();
+  await expect(page.getByRole('heading', { name: agent.agent.name })).toHaveCount(0);
+});
+
 test('complete debate persists and renders a polished verdict', async ({ page, request }) => {
-  const flow = await completeConflict(request, `debate-${Date.now()}`);
+  const flow = await completeConflict(request, `debate-${unique()}`);
   await page.request.post('/api/v1/auth/development', {
     data: { email: flow.alice.email, display_name: flow.alice.displayName },
   });
@@ -268,7 +291,7 @@ test('realtime mutation reaches the participant and reconnect recovers history',
   page,
   request,
 }) => {
-  const flow = await completeConflict(request, `realtime-${Date.now()}`, 0);
+  const flow = await completeConflict(request, `realtime-${unique()}`, 0);
   await page.request.post('/api/v1/auth/development', {
     data: { email: flow.alice.email, display_name: flow.alice.displayName },
   });
@@ -285,7 +308,7 @@ test('realtime mutation reaches the participant and reconnect recovers history',
       data: {
         action_type: current.task.allowed_actions[0],
         content: 'Realtime event reached the participant without a page refresh.',
-        client_request_id: `realtime-action-${Date.now()}`,
+        client_request_id: `realtime-action-${unique()}`,
       },
     }),
   );
@@ -301,7 +324,7 @@ test('realtime mutation reaches the participant and reconnect recovers history',
 test('private briefs, observer access and cross-conflict access are isolated', async ({
   request,
 }) => {
-  const flow = await completeConflict(request, `privacy-${Date.now()}`);
+  const flow = await completeConflict(request, `privacy-${unique()}`);
   const a = await body(
     await request.get(`/api/v1/conflicts/${flow.id}/brief?party_id=party_b`, { headers: flow.ah }),
   );
@@ -312,14 +335,14 @@ test('private briefs, observer access and cross-conflict access are isolated', a
   expect(JSON.stringify(a)).not.toContain(flow.secrets[1]);
   expect(JSON.stringify(b)).toContain(flow.secrets[1]);
   expect(JSON.stringify(b)).not.toContain(flow.secrets[0]);
-  const stranger = await user(request, 'Mallory', `privacy-${Date.now()}`);
+  const stranger = await user(request, 'Mallory', `privacy-${unique()}`);
   expect(
     (await request.get(`/api/v1/conflicts/${flow.id}`, { headers: headers(stranger.id) })).status(),
   ).toBe(404);
 });
 
 test('unlisted sharing is safe, read-only and immediately revocable', async ({ page, request }) => {
-  const flow = await completeConflict(request, `share-${Date.now()}`);
+  const flow = await completeConflict(request, `share-${unique()}`);
   const shared = await body(
     await request.post(`/api/v1/conflicts/${flow.id}/share-links`, { headers: flow.ah, data: {} }),
   );
@@ -345,7 +368,7 @@ test('unlisted sharing is safe, read-only and immediately revocable', async ({ p
 });
 
 test('revoked credential fails and mobile layouts do not overflow', async ({ page, request }) => {
-  const flow = await completeConflict(request, `revoke-${Date.now()}`);
+  const flow = await completeConflict(request, `revoke-${unique()}`);
   expect(
     (
       await request.get('/api/v1/agent/tasks', {

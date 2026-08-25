@@ -75,7 +75,7 @@ GitHub 仓库 → **Settings → Environments → New environment**，名称必�
 | `CLOUDFLARE_ACCOUNT_ID` | Cloudflare 32 位 Account ID |
 | `CLOUDFLARE_D1_DATABASE_ID` | Cloudflare 返回的完整 resolveroom D1 database ID |
 | `PUBLIC_APP_URL` | 最终 HTTPS origin，不带尾部斜杠 |
-| `JUDGE_PROVIDER` | 初次部署填 `mock` |
+| `JUDGE_PROVIDER` | 未配置外部 LLM 时填 `disabled`；配置完成后改为 `llm` |
 | `EMAIL_PROVIDER` | 初次部署填 `console` |
 
 在 **Environment secrets** 添加：

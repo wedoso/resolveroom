@@ -96,7 +96,8 @@ Migrations are forward-only. D1 stores hashes rather than raw session, invitatio
 `.env.example` documents every supported value. Important modes:
 
 - `ENVIRONMENT=development` enables explicit local identities; production disables them.
-- `JUDGE_PROVIDER=mock` runs the deterministic credential-free Judge.
+- `JUDGE_PROVIDER=disabled` is the production-safe default and removes Judge controls from the product UI.
+- `JUDGE_PROVIDER=mock` runs the deterministic credential-free Judge in local development/tests only.
 - `JUDGE_PROVIDER=llm` requires `JUDGE_API_URL`, `JUDGE_API_KEY`, and `JUDGE_MODEL`.
 - `EMAIL_PROVIDER=console` keeps delivery in-app without an external service.
 - `EMAIL_PROVIDER=http` posts `{ from, to, subject, text }` to `EMAIL_API_URL` with `EMAIL_API_KEY` as a bearer credential.

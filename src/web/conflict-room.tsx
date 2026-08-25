@@ -208,11 +208,17 @@ export function ConflictRoomPage() {
           </div>
         </header>
         <ParticipantStrip parties={c.parties} />
-        <ProtocolProgress phase={c.phase} status={c.status} />
+        <ProtocolProgress phase={c.phase} status={c.status} judgeAvailable={c.judge_available} />
         <div className="room-grid">
           <section className="record-column">
             <div className="room-tabs" role="tablist" aria-label="Conflict sections">
-              {['live', 'transcript', 'private brief', 'verdict', 'settings'].map((value) => (
+              {[
+                'live',
+                'transcript',
+                'private brief',
+                ...(c.judge_available ? ['verdict'] : []),
+                'settings',
+              ].map((value) => (
                 <button
                   key={value}
                   role="tab"
@@ -281,7 +287,7 @@ export function ConflictRoomPage() {
                 <LockKeyhole />
                 <div>
                   <strong>Only you and your authorized agent</strong>
-                  <p>Never shared with {opponent.display_name}, their agent, or the Judge.</p>
+                  <p>Never shared with {opponent.display_name} or their agent.</p>
                 </div>
                 <button className="text-link" onClick={() => setTab('private brief')}>
                   {data.brief ? 'Edit brief' : 'Add context'} →
@@ -337,8 +343,12 @@ export function ConflictRoomPage() {
       <ConfirmDialog
         open={confirm === 'concede'}
         title="Concede this conflict?"
-        description="Your concession will become part of the shared case record and the Judge will prepare a short advisory assessment."
-        confirmLabel="Concede and request verdict"
+        description={
+          c.judge_available
+            ? 'Your concession will become part of the shared case record and the Judge will prepare a short advisory assessment.'
+            : 'Your concession will become part of the shared case record and end the structured exchange.'
+        }
+        confirmLabel={c.judge_available ? 'Concede and request verdict' : 'Concede conflict'}
         onClose={() => setConfirm(null)}
         onConfirm={() => mutate('concede')}
       />
@@ -366,10 +376,18 @@ function ParticipantStrip({ parties }: { parties: any[] }) {
     </section>
   );
 }
-function ProtocolProgress({ phase, status }: { phase: string | null; status: string }) {
-  const items = ['opening', 'rebuttal', 'closing', 'verdict'];
-  const current = status === 'resolved' ? 'verdict' : (phase ?? 'opening');
-  const index = items.indexOf(current);
+function ProtocolProgress({
+  phase,
+  status,
+  judgeAvailable,
+}: {
+  phase: string | null;
+  status: string;
+  judgeAvailable: boolean;
+}) {
+  const items = ['opening', 'rebuttal', 'closing', ...(judgeAvailable ? ['verdict'] : [])];
+  const current = status === 'resolved' && judgeAvailable ? 'verdict' : (phase ?? 'opening');
+  const index = status === 'resolved' && !judgeAvailable ? items.length : items.indexOf(current);
   return (
     <section className="protocol-progress" aria-label="Protocol progress">
       {items.map((item, i) => (
@@ -431,9 +449,13 @@ function TurnCard({ conflict: c }: { conflict: any }) {
             <Scale />
             <strong>
               {c.status === 'resolved'
-                ? 'Assessment complete'
+                ? c.judge_available
+                  ? 'Assessment complete'
+                  : 'Exchange complete'
                 : c.status === 'judging'
-                  ? 'Judge is evaluating'
+                  ? c.judge_available
+                    ? 'Judge is evaluating'
+                    : 'Exchange complete'
                   : c.status === 'briefing'
                     ? 'Waiting for both participants'
                     : c.status.replaceAll('_', ' ')}
@@ -491,7 +513,7 @@ function AgentCard({
     if (!pairingId || pairing.pairing.status !== 'waiting') return;
     const refresh = async () => {
       try {
-        const value = await api<any>(`/agent-pairings/${pairingId}`);
+        const value = await api<any>(`/agent-pairings/${pairingId}`, { cache: 'no-store' });
         setPairing((current: any) => (current ? { ...current, pairing: value.pairing } : current));
         if (value.pairing.status === 'connected') await load();
       } catch {
@@ -890,8 +912,10 @@ function SettingsPanel({
             <span>
               <h3>Unlisted observer links</h3>
               <p>
-                Safe transcript and verdict only. Private events are filtered from the canonical
-                record.
+                {data.conflict.judge_available
+                  ? 'Safe transcript and verdict only.'
+                  : 'Safe transcript only.'}{' '}
+                Private events are filtered from the canonical record.
               </p>
             </span>
           </div>

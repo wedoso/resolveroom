@@ -10,6 +10,7 @@ import { JudgeService } from '@/judge/service';
 import { MemoryDatabase } from '@/persistence/memory';
 import { opaqueId } from '@/domain/security';
 import type { Conflict, ConflictParty, User } from '@/domain/types';
+import { createApi } from '@/api/app';
 
 const input: JudgeInput = {
   conflictId: 'con_test',
@@ -168,5 +169,30 @@ describe('JudgeService retries', () => {
     const conflict = (await db.getConflict(input.conflictId))!;
     const judgeInput = judgeInputFromEvents(conflict, await db.listEvents(input.conflictId));
     expect(JSON.stringify(judgeInput)).not.toContain('JUDGE_MUST_NOT_SEE_THIS');
+  });
+});
+
+describe('Judge deployment capability', () => {
+  it('keeps Judge unavailable to users when no external provider is configured', async () => {
+    const db = await judgingDb();
+    const app = createApi(db, {
+      allowDevelopmentAuth: true,
+      appUrl: 'http://judge.test',
+      judgeEnabled: false,
+    });
+    const capabilities = await app.request('http://judge.test/api/v1/capabilities');
+    expect(await capabilities.json()).toEqual({
+      judge: { available: false, mode: 'disabled' },
+    });
+    const response = await app.request(
+      `http://judge.test/api/v1/conflicts/${input.conflictId}/judge`,
+      {
+        method: 'POST',
+        headers: { 'x-dev-user-id': [...db.users.values()][0].id },
+      },
+    );
+    expect(response.status).toBe(503);
+    expect(((await response.json()) as any).error.code).toBe('JUDGE_UNAVAILABLE');
+    expect(await db.getVerdict(input.conflictId)).toBeNull();
   });
 });

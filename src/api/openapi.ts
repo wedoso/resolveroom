@@ -57,6 +57,7 @@ export const openapiDocument = {
                   'CONFLICT_RESOLVED',
                   'DUPLICATE_REQUEST',
                   'RATE_LIMITED',
+                  'JUDGE_UNAVAILABLE',
                   'JUDGE_FAILED',
                   'VALIDATION_ERROR',
                 ],
@@ -116,6 +117,13 @@ export const openapiDocument = {
     },
   },
   paths: {
+    '/capabilities': {
+      get: {
+        tags: ['Authentication'],
+        summary: 'Read deployment capabilities without authentication',
+        responses: ok,
+      },
+    },
     '/auth/providers': {
       get: { tags: ['Authentication'], summary: 'List configured sign-in methods', responses: ok },
     },
@@ -390,6 +398,12 @@ export const openapiDocument = {
         summary: 'Read an owned agent',
         security: humanSession,
         responses: ok,
+      },
+      delete: {
+        tags: ['Agents'],
+        summary: 'Revoke and remove an owned agent that is not in an active conflict',
+        security: humanSession,
+        responses: noContent,
       },
     },
     '/agents/{id}/tokens': {

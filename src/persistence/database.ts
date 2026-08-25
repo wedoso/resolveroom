@@ -18,6 +18,11 @@ export interface NewEvent extends Omit<ConflictEvent, 'id' | 'sequenceNumber' | 
   clientRequestId?: string;
 }
 
+export type AgentRevocationResult =
+  | { status: 'revoked'; unboundParties: ConflictParty[] }
+  | { status: 'in_use'; conflictId: string }
+  | { status: 'not_found' };
+
 export interface Database {
   createUser(user: User): Promise<User>;
   getUser(id: string): Promise<User | null>;
@@ -39,6 +44,7 @@ export interface Database {
   getConflict(id: string): Promise<Conflict | null>;
   updateConflict(conflict: Conflict): Promise<void>;
   listConflictsForUser(userId: string): Promise<Conflict[]>;
+  listConflictsForAgent(agentId: string): Promise<Conflict[]>;
   getParties(conflictId: string): Promise<ConflictParty[]>;
   updateParty(party: ConflictParty): Promise<void>;
   findPartyForUser(conflictId: string, userId: string): Promise<ConflictParty | null>;
@@ -53,6 +59,7 @@ export interface Database {
   createAgent(agent: Agent): Promise<Agent>;
   getAgent(id: string): Promise<Agent | null>;
   listAgents(userId: string): Promise<Agent[]>;
+  revokeAgent(agentId: string, ownerUserId: string): Promise<AgentRevocationResult>;
   createAgentToken(token: AgentToken): Promise<AgentToken>;
   findAgentToken(tokenHash: string): Promise<AgentToken | null>;
   revokeAgentToken(tokenId: string, ownerUserId: string): Promise<boolean>;

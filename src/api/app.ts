@@ -37,6 +37,8 @@ type Identity = { kind: 'human'; user: User } | { kind: 'agent'; agent: Agent };
 type AppEnv = { Variables: { requestId: string; identity?: Identity } };
 type Options = {
   allowDevelopmentAuth?: boolean;
+  judgeEnabled?: boolean;
+  judgeMode?: 'disabled' | 'mock' | 'llm';
   judgeProvider?: JudgeProvider;
   appUrl?: string;
   secureCookies?: boolean;
@@ -82,6 +84,8 @@ export function createApi(db: Database, options: Options = {}) {
     options.judgeProvider ?? new MockJudgeProvider(),
     notifications,
   );
+  const judgeEnabled = options.judgeEnabled ?? true;
+  const judgeMode = judgeEnabled ? (options.judgeMode ?? 'mock') : 'disabled';
   app.use('*', secureHeaders());
   const allowedOrigin = new URL(options.appUrl ?? 'http://localhost:5173').origin;
   app.use(
@@ -330,6 +334,9 @@ export function createApi(db: Database, options: Options = {}) {
     return c.body(null, 204);
   });
   app.get('/api/v1/auth/me', (c) => c.json({ user: human(c) }));
+  app.get('/api/v1/capabilities', (c) =>
+    c.json({ judge: { available: judgeEnabled, mode: judgeMode } }),
+  );
 
   app.post('/api/v1/conflicts', async (c) => {
     const user = human(c);
@@ -357,6 +364,7 @@ export function createApi(db: Database, options: Options = {}) {
           your_party: yours.role,
           opponent: { display_name: opponent.displayName, joined: Boolean(opponent.userId) },
           current_turn: current,
+          judge_available: judgeEnabled,
         };
       }),
     );
@@ -379,6 +387,7 @@ export function createApi(db: Database, options: Options = {}) {
       ...publicConflict(conflict),
       your_party: party.role,
       current_turn: authoritativeTurn(conflict, parties, events),
+      judge_available: judgeEnabled,
       parties: await Promise.all(
         parties.map(async (p) => ({
           id: p.id,
@@ -469,7 +478,7 @@ export function createApi(db: Database, options: Options = {}) {
   app.post('/api/v1/conflicts/:id/ready', async (c) => {
     const body = await jsonBody(c);
     const result = await conflicts.setReady(c.req.param('id'), human(c).id, body.ready !== false);
-    if (result.started) await runJudgeIfNeeded(db, judge, c.req.param('id'));
+    if (judgeEnabled && result.started) await runJudgeIfNeeded(db, judge, c.req.param('id'));
     return c.json(result);
   });
   app.post('/api/v1/conflicts/:id/pause', async (c) => {
@@ -487,7 +496,7 @@ export function createApi(db: Database, options: Options = {}) {
   app.post('/api/v1/conflicts/:id/concede', async (c) => {
     await discardRequestBody(c);
     const value = await conflicts.concede(c.req.param('id'), human(c).id);
-    const verdict = await judge.run(c.req.param('id'));
+    const verdict = judgeEnabled ? await judge.run(c.req.param('id')) : null;
     return c.json({ conflict: value, verdict });
   });
 
@@ -510,7 +519,23 @@ export function createApi(db: Database, options: Options = {}) {
     await db.recordAnalytics('agent_created', user.id, null, { agent_id: value.id });
     return c.json({ agent: value }, 201);
   });
-  app.get('/api/v1/agents', async (c) => c.json({ agents: await db.listAgents(human(c).id) }));
+  app.get('/api/v1/agents', async (c) => {
+    const agents = await db.listAgents(human(c).id);
+    return c.json({
+      agents: await Promise.all(
+        agents.map(async (agent) => {
+          const conflict = (await db.listConflictsForAgent(agent.id)).find((candidate) =>
+            ['active', 'paused', 'judging'].includes(candidate.status),
+          );
+          return {
+            ...agent,
+            deletion_blocked: Boolean(conflict),
+            active_conflict: conflict ? { id: conflict.id, title: conflict.title } : null,
+          };
+        }),
+      ),
+    });
+  });
   app.get('/api/v1/agents/:id', async (c) => {
     const user = human(c);
     const value = await db.getAgent(c.req.param('id'));
@@ -518,10 +543,38 @@ export function createApi(db: Database, options: Options = {}) {
       throw new DomainError('NOT_FOUND', 'Agent not found.', 404);
     return c.json({ agent: value });
   });
+  app.delete('/api/v1/agents/:id', async (c) => {
+    const user = human(c);
+    const agentId = c.req.param('id');
+    const agent = await db.getAgent(agentId);
+    if (!agent || agent.ownerUserId !== user.id || agent.status !== 'active')
+      throw new DomainError('NOT_FOUND', 'Agent not found.', 404);
+    const result = await db.revokeAgent(agentId, user.id);
+    if (result.status === 'in_use')
+      throw new DomainError(
+        'INVALID_STATE',
+        'This agent is assigned to an active conflict. Resolve or cancel that conflict before deleting the agent.',
+        409,
+      );
+    if (result.status === 'not_found') throw new DomainError('NOT_FOUND', 'Agent not found.', 404);
+    for (const party of result.unboundParties)
+      await db.appendEvent({
+        conflictId: party.conflictId,
+        eventType: 'agent_unbound',
+        actorType: 'user',
+        actorId: user.id,
+        partyId: party.id,
+        partyRole: party.role,
+        visibility: 'case',
+        payload: { agent_id: agentId, reason: 'agent_deleted' },
+      });
+    await db.recordAnalytics('agent_deleted', user.id, null, { agent_id: agentId });
+    return c.body(null, 204);
+  });
   app.post('/api/v1/agents/:id/tokens', async (c) => {
     const user = human(c);
     const ag = await db.getAgent(c.req.param('id'));
-    if (!ag || ag.ownerUserId !== user.id)
+    if (!ag || ag.ownerUserId !== user.id || ag.status !== 'active')
       throw new DomainError('NOT_FOUND', 'Agent not found.', 404);
     const raw = secureToken('rr_agent_');
     const timestamp = new Date().toISOString();
@@ -546,7 +599,7 @@ export function createApi(db: Database, options: Options = {}) {
   app.post('/api/v1/agents/:id/tokens/rotate', async (c) => {
     const user = human(c);
     const ag = await db.getAgent(c.req.param('id'));
-    if (!ag || ag.ownerUserId !== user.id)
+    if (!ag || ag.ownerUserId !== user.id || ag.status !== 'active')
       throw new DomainError('NOT_FOUND', 'Agent not found.', 404);
     await db.revokeAllAgentTokens(ag.id);
     const raw = secureToken('rr_agent_');
@@ -691,6 +744,7 @@ export function createApi(db: Database, options: Options = {}) {
     const ag = pairing ? await db.getAgent(pairing.agentId) : null;
     if (!pairing || !ag || ag.ownerUserId !== user.id)
       throw new DomainError('NOT_FOUND', 'Pairing not found.', 404);
+    c.header('Cache-Control', 'no-store, private');
     return c.json({ pairing: pairingView(pairing) });
   });
 
@@ -736,7 +790,7 @@ export function createApi(db: Database, options: Options = {}) {
         duplicate: result.duplicate,
       }),
     );
-    if (result.needsJudging) await judge.run(c.req.param('id'));
+    if (judgeEnabled && result.needsJudging) await judge.run(c.req.param('id'));
     return c.json({
       event_id: result.event.id,
       sequence_number: result.event.sequenceNumber,
@@ -747,6 +801,12 @@ export function createApi(db: Database, options: Options = {}) {
   app.post('/api/v1/conflicts/:id/judge', async (c) => {
     await discardRequestBody(c);
     await conflicts.requireParticipant(c.req.param('id'), human(c).id);
+    if (!judgeEnabled)
+      throw new DomainError(
+        'JUDGE_UNAVAILABLE',
+        'Advisory assessment is not enabled for this ResolveRoom deployment.',
+        503,
+      );
     return c.json({ verdict: await judge.run(c.req.param('id')) });
   });
   app.get('/api/v1/conflicts/:id/verdict', async (c) => {
@@ -930,12 +990,10 @@ function authoritativeTurn(conflict: any, parties: ConflictParty[], events: any[
 }
 async function allAgentConflicts(db: Database, agentId: string) {
   const list: any[] = [];
-  for (const agOwner of [(await db.getAgent(agentId))?.ownerUserId].filter(Boolean) as string[]) {
-    for (const conflict of await db.listConflictsForUser(agOwner)) {
-      const parties = await db.getParties(conflict.id);
-      const party = parties.find((p) => p.agentId === agentId);
-      if (party) list.push({ conflict, party, parties });
-    }
+  for (const conflict of await db.listConflictsForAgent(agentId)) {
+    const parties = await db.getParties(conflict.id);
+    const party = parties.find((p) => p.agentId === agentId);
+    if (party) list.push({ conflict, party, parties });
   }
   return list;
 }

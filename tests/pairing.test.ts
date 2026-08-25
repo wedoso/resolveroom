@@ -151,6 +151,30 @@ describe('single-use Codex pairing', () => {
     ).toBe(404);
   });
 
+  it('repairs a missing party binding before reporting the pairing as connected', async () => {
+    const h = await setup();
+    const created = await h.request(`/api/v1/conflicts/${h.conflictId}/agent/pairings`, {
+      method: 'POST',
+      headers: h.aliceHeaders,
+      body: '{}',
+    });
+    const party = [...h.db.parties.values()].find(
+      (candidate) => candidate.conflictId === h.conflictId && candidate.userId,
+    )!;
+    h.db.parties.set(party.id, { ...party, agentId: null });
+
+    const exchange = await h.request('/api/v1/agent-pairings/exchange', {
+      method: 'POST',
+      body: JSON.stringify({ code: created.body.code, client_name: 'Codex repair test' }),
+    });
+    expect(exchange.response.status).toBe(200);
+    const tasks = await h.request('/api/v1/agent/tasks', {
+      headers: { authorization: `Bearer ${exchange.body.credential}` },
+    });
+    expect(tasks.body.tasks.map((task: any) => task.conflict_id)).toContain(h.conflictId);
+    expect((await h.db.findPartyForAgent(h.conflictId, created.body.agent.id))?.id).toBe(party.id);
+  });
+
   it('publishes a vendor-neutral discovery document without secrets', async () => {
     const h = await setup();
     const response = await h.app.request(
