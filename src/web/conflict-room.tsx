@@ -1,0 +1,819 @@
+import {
+  AlertTriangle,
+  ArrowLeft,
+  Bot,
+  Check,
+  ChevronDown,
+  Copy,
+  FileText,
+  Link2,
+  LoaderCircle,
+  LockKeyhole,
+  MoreHorizontal,
+  Pause,
+  Play,
+  Radio,
+  RefreshCw,
+  Scale,
+  Share2,
+  ShieldCheck,
+  Unplug,
+  X,
+} from 'lucide-react';
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
+import { Link, useParams, useSearchParams } from 'react-router-dom';
+import { api } from './api';
+import {
+  AppShell,
+  ConfirmDialog,
+  Dialog,
+  PageLoading,
+  PrivacyNote,
+  StatePanel,
+  StatusBadge,
+} from './components';
+import { TranscriptList } from './pages';
+
+type RoomData = {
+  conflict: any;
+  events: any[];
+  brief: any;
+  verdict: any;
+  agents: any[];
+  shareLinks: any[];
+};
+export function ConflictRoomPage() {
+  const { id } = useParams();
+  const [search] = useSearchParams();
+  const [data, setData] = useState<RoomData | null>(null);
+  const [error, setError] = useState('');
+  const [tab, setTab] = useState('live');
+  const [connection, setConnection] = useState<
+    'connecting' | 'connected' | 'reconnecting' | 'offline'
+  >('connecting');
+  const [invite, setInvite] = useState<any>(null);
+  const [confirm, setConfirm] = useState<'cancel' | 'concede' | null>(null);
+  const [newActivity, setNewActivity] = useState(false);
+  const recordRef = useRef<HTMLDivElement>(null);
+  const load = useCallback(async () => {
+    if (!id) return;
+    try {
+      const [conflict, events, brief, agents, shares] = await Promise.all([
+        api<any>(`/conflicts/${id}`),
+        api<any>(`/conflicts/${id}/events`),
+        api<any>(`/conflicts/${id}/brief`),
+        api<any>('/agents'),
+        api<any>(`/conflicts/${id}/share-links`).catch(() => ({ share_links: [] })),
+      ]);
+      let verdict = null;
+      if (conflict.status === 'resolved')
+        verdict = await api<any>(`/conflicts/${id}/verdict`).catch(() => null);
+      setData({
+        conflict,
+        events: events.events,
+        brief: brief.brief,
+        verdict: verdict?.verdict ?? null,
+        agents: agents.agents,
+        shareLinks: shares.share_links,
+      });
+      setError('');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Conflict could not be loaded.');
+    }
+  }, [id]);
+  useEffect(() => {
+    void load();
+  }, [load]);
+  useEffect(() => {
+    if (!id) return;
+    let socket: WebSocket | undefined;
+    let retry: number | undefined;
+    const connect = () => {
+      setConnection((current) => (current === 'connected' ? 'reconnecting' : current));
+      const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      socket = new WebSocket(`${protocol}//${location.host}/api/v1/conflicts/${id}/stream`);
+      socket.onopen = () => setConnection('connected');
+      socket.onmessage = () => {
+        const element = recordRef.current;
+        const near = element
+          ? element.scrollHeight - element.scrollTop - element.clientHeight < 140
+          : true;
+        if (!near) setNewActivity(true);
+        void load();
+      };
+      socket.onclose = () => {
+        setConnection(navigator.onLine ? 'reconnecting' : 'offline');
+        retry = window.setTimeout(connect, 2000);
+      };
+      socket.onerror = () => socket?.close();
+    };
+    connect();
+    return () => {
+      if (retry) clearTimeout(retry);
+      socket?.close();
+    };
+  }, [id, load]);
+  const createInvite = async () => {
+    const value = await api<any>(`/conflicts/${id}/invite`, { method: 'POST', body: '{}' });
+    setInvite(value.invite);
+  };
+  useEffect(() => {
+    if (search.get('created') === '1' && data?.conflict.your_party === 'party_a' && !invite)
+      void createInvite();
+  }, [data?.conflict.your_party]);
+  if (!data && !error)
+    return (
+      <AppShell>
+        <PageLoading label="Opening the conflict room…" />
+      </AppShell>
+    );
+  if (error)
+    return (
+      <AppShell>
+        <main className="state-page">
+          <StatePanel icon="error" title="This conflict is unavailable">
+            <p>{error}</p>
+            <Link className="button secondary" to="/dashboard">
+              Back to dashboard
+            </Link>
+          </StatePanel>
+        </main>
+      </AppShell>
+    );
+  if (!data) return null;
+  const c = data.conflict;
+  const yours = c.parties.find((p: any) => p.role === c.your_party);
+  const opponent = c.parties.find((p: any) => p.role !== c.your_party);
+  const mutate = async (action: string) => {
+    await api(`/conflicts/${id}/${action}`, { method: 'POST', body: '{}' });
+    await load();
+  };
+  return (
+    <AppShell>
+      <main className="room-frame">
+        <div className="room-breadcrumb">
+          <Link to="/dashboard">
+            <ArrowLeft />
+            Conflicts
+          </Link>
+          <span className="mono">CASE / {c.id.slice(-8).toUpperCase()}</span>
+        </div>
+        <header className="room-header">
+          <div>
+            <div className="card-meta">
+              <span className="mono">PRIVATE {c.protocol_type}</span>
+              <StatusBadge status={c.status} />
+            </div>
+            <h1>{c.title}</h1>
+            <p>{c.description}</p>
+          </div>
+          <div className="room-actions">
+            <button className="button secondary" onClick={() => void createInvite()}>
+              <Share2 />
+              Invite
+            </button>
+            <div className="action-menu">
+              <button className="button">
+                <MoreHorizontal />
+                Case actions
+                <ChevronDown />
+              </button>
+              <div className="menu-popover">
+                {c.status === 'active' && (
+                  <button onClick={() => void mutate('pause')}>
+                    <Pause />
+                    Pause conflict
+                  </button>
+                )}
+                {c.status === 'paused' && (
+                  <button onClick={() => void mutate('resume')}>
+                    <Play />
+                    Resume conflict
+                  </button>
+                )}
+                {c.status === 'active' && (
+                  <button onClick={() => setConfirm('concede')}>
+                    <Scale />
+                    Concede
+                  </button>
+                )}{' '}
+                {!['resolved', 'cancelled', 'expired'].includes(c.status) && (
+                  <button className="danger-text" onClick={() => setConfirm('cancel')}>
+                    <X />
+                    Cancel conflict
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        </header>
+        <ParticipantStrip parties={c.parties} />
+        <ProtocolProgress phase={c.phase} status={c.status} />
+        <div className="room-grid">
+          <section className="record-column">
+            <div className="room-tabs" role="tablist" aria-label="Conflict sections">
+              {['live', 'transcript', 'private brief', 'verdict', 'settings'].map((value) => (
+                <button
+                  key={value}
+                  role="tab"
+                  aria-selected={tab === value}
+                  onClick={() => setTab(value)}
+                >
+                  {value}
+                </button>
+              ))}
+              <ConnectionState state={connection} />
+            </div>
+            {tab === 'live' || tab === 'transcript' ? (
+              <div ref={recordRef} className="record-pane">
+                <div className="record-title">
+                  <div>
+                    <h2>{tab === 'live' ? 'Live case record' : 'Complete transcript'}</h2>
+                    <p>Append-only · {data.events.length} authorized events</p>
+                  </div>
+                  {tab === 'live' && (
+                    <span className="live-label">
+                      <Radio />
+                      Following live
+                    </span>
+                  )}
+                </div>
+                {data.events.length ? (
+                  <TranscriptList events={data.events} />
+                ) : (
+                  <StatePanel title="The case record is waiting">
+                    <p>
+                      Events will appear here once both participants are ready and the agents begin.
+                    </p>
+                  </StatePanel>
+                )}
+                {newActivity && (
+                  <button
+                    className="new-activity"
+                    onClick={() => {
+                      setNewActivity(false);
+                      recordRef.current?.scrollTo({
+                        top: recordRef.current.scrollHeight,
+                        behavior: 'smooth',
+                      });
+                    }}
+                  >
+                    New activity ↓
+                  </button>
+                )}
+              </div>
+            ) : tab === 'private brief' ? (
+              <BriefPanel id={id!} brief={data.brief} onSaved={load} />
+            ) : tab === 'verdict' ? (
+              <VerdictPanel record={data.verdict} status={c.status} />
+            ) : (
+              <SettingsPanel id={id!} data={data} load={load} />
+            )}
+          </section>
+          <aside className="context-rail">
+            <TurnCard conflict={c} />
+            <AgentCard id={id!} party={yours} agents={data.agents} load={load} />
+            <section className="rail-section">
+              <div className="rail-label">
+                PRIVATE BRIEF <span>{data.brief ? 'SAVED' : 'NOT STARTED'}</span>
+              </div>
+              <div className="rail-paper">
+                <LockKeyhole />
+                <div>
+                  <strong>Only you and your authorized agent</strong>
+                  <p>Never shared with {opponent.display_name}, their agent, or the Judge.</p>
+                </div>
+                <button className="text-link" onClick={() => setTab('private brief')}>
+                  {data.brief ? 'Edit brief' : 'Add context'} →
+                </button>
+              </div>
+            </section>
+          </aside>
+        </div>
+      </main>
+      <Dialog
+        open={Boolean(invite)}
+        onClose={() => setInvite(null)}
+        title="Invite the other participant"
+        description="This single-purpose link expires in seven days and survives their sign-in redirect."
+      >
+        {invite && (
+          <div className="invite-reveal">
+            <label>
+              Private invitation link
+              <div>
+                <input readOnly value={invite.url} />
+                <button
+                  className="icon-button"
+                  onClick={() => void navigator.clipboard.writeText(invite.url)}
+                  aria-label="Copy invitation"
+                >
+                  <Copy />
+                </button>
+              </div>
+            </label>
+            <div className="privacy-note">
+              <ShieldCheck />
+              <p>
+                Anyone with this link can accept the Party B seat once. Send it through a channel
+                you trust.
+              </p>
+            </div>
+            <button className="button wide" onClick={() => setInvite(null)}>
+              Done
+            </button>
+          </div>
+        )}
+      </Dialog>
+      <ConfirmDialog
+        open={confirm === 'cancel'}
+        title="Cancel this conflict?"
+        description="The case record will remain available to participants, but agents will no longer be able to act. This cannot be undone."
+        confirmLabel="Cancel conflict"
+        danger
+        onClose={() => setConfirm(null)}
+        onConfirm={() => mutate('cancel')}
+      />
+      <ConfirmDialog
+        open={confirm === 'concede'}
+        title="Concede this conflict?"
+        description="Your concession will become part of the shared case record and the Judge will prepare a short advisory assessment."
+        confirmLabel="Concede and request verdict"
+        onClose={() => setConfirm(null)}
+        onConfirm={() => mutate('concede')}
+      />
+    </AppShell>
+  );
+}
+
+function ParticipantStrip({ parties }: { parties: any[] }) {
+  return (
+    <section className="participant-strip">
+      {parties.map((p) => (
+        <div key={p.id}>
+          <span className={p.role === 'party_a' ? 'party-avatar a' : 'party-avatar b'}>
+            {p.display_name.slice(0, 1)}
+          </span>
+          <div>
+            <strong>{p.display_name}</strong>
+            <small>
+              {p.role.replace('_', ' ')} · {p.agent_bound ? 'AGENT BOUND' : 'NO AGENT'} ·{' '}
+              {p.ready ? 'READY' : 'NOT READY'}
+            </small>
+          </div>
+        </div>
+      ))}
+    </section>
+  );
+}
+function ProtocolProgress({ phase, status }: { phase: string | null; status: string }) {
+  const items = ['opening', 'rebuttal', 'closing', 'verdict'];
+  const current = status === 'resolved' ? 'verdict' : (phase ?? 'opening');
+  const index = items.indexOf(current);
+  return (
+    <section className="protocol-progress" aria-label="Protocol progress">
+      {items.map((item, i) => (
+        <div className={i < index ? 'complete' : i === index ? 'current' : ''} key={item}>
+          <span>{i < index ? <Check /> : i + 1}</span>
+          <strong>{item}</strong>
+        </div>
+      ))}
+    </section>
+  );
+}
+function ConnectionState({ state }: { state: string }) {
+  return (
+    <span className={`connection ${state}`} aria-live="polite">
+      {state === 'connected' ? (
+        <>
+          <i />
+          Connected
+        </>
+      ) : state === 'offline' ? (
+        <>
+          <Unplug />
+          Offline
+        </>
+      ) : (
+        <>
+          <RefreshCw className="spin" />
+          {state}
+        </>
+      )}
+    </span>
+  );
+}
+function TurnCard({ conflict: c }: { conflict: any }) {
+  const turn = c.current_turn;
+  const party = turn ? c.parties.find((p: any) => p.id === turn.party_id) : null;
+  return (
+    <section className="rail-section">
+      <div className="rail-label">CURRENT STATE</div>
+      <div className="turn-card">
+        {turn ? (
+          <>
+            <div>
+              <span className={turn.party_role === 'party_a' ? 'party-avatar a' : 'party-avatar b'}>
+                {party?.display_name.slice(0, 1)}
+              </span>
+              <span>
+                <strong>{party?.display_name}’s agent</strong>
+                <small>Owns the {c.phase} turn</small>
+              </span>
+              <i />
+            </div>
+            <hr />
+            <small className="mono">ALLOWED ACTIONS</small>
+            <p>{turn.allowed_actions.map((a: string) => a.replaceAll('_', ' ')).join(' · ')}</p>
+          </>
+        ) : (
+          <>
+            <Scale />
+            <strong>
+              {c.status === 'resolved'
+                ? 'Assessment complete'
+                : c.status === 'judging'
+                  ? 'Judge is evaluating'
+                  : c.status === 'briefing'
+                    ? 'Waiting for both participants'
+                    : c.status.replaceAll('_', ' ')}
+            </strong>
+            <p>No agent action is currently accepted.</p>
+          </>
+        )}
+      </div>
+    </section>
+  );
+}
+function AgentCard({
+  id,
+  party,
+  agents,
+  load,
+}: {
+  id: string;
+  party: any;
+  agents: any[];
+  load: () => Promise<void>;
+}) {
+  const [busy, setBusy] = useState(false);
+  const bind = async (agentId: string) => {
+    setBusy(true);
+    await api(`/conflicts/${id}/agent`, {
+      method: 'POST',
+      body: JSON.stringify({ agent_id: agentId }),
+    });
+    await load();
+    setBusy(false);
+  };
+  const ready = async () => {
+    setBusy(true);
+    await api(`/conflicts/${id}/ready`, { method: 'POST', body: '{"ready":true}' });
+    await load();
+    setBusy(false);
+  };
+  return (
+    <section className="rail-section">
+      <div className="rail-label">
+        YOUR REPRESENTATIVE <span>{party.agent_bound ? 'CONNECTED' : 'ACTION NEEDED'}</span>
+      </div>
+      <div className="agent-rail-card">
+        <Bot />
+        <div>
+          <strong>{party.agent_bound ? 'Agent connected' : 'Connect an agent'}</strong>
+          <p>
+            {party.agent_bound
+              ? 'The credential can discover and act on this conflict.'
+              : 'Choose one of your authorized external agents.'}
+          </p>
+        </div>
+        {party.agent_bound ? (
+          <button
+            className="button secondary wide"
+            disabled={party.ready || busy}
+            onClick={() => void ready()}
+          >
+            {party.ready ? (
+              <>
+                <Check />
+                Ready
+              </>
+            ) : busy ? (
+              'Saving…'
+            ) : (
+              'I’m ready'
+            )}
+          </button>
+        ) : agents.length ? (
+          <select
+            aria-label="Select agent"
+            disabled={busy}
+            defaultValue=""
+            onChange={(e) => void bind(e.target.value)}
+          >
+            <option value="" disabled>
+              Select agent…
+            </option>
+            {agents
+              .filter((a) => a.status === 'active')
+              .map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.name}
+                </option>
+              ))}
+          </select>
+        ) : (
+          <Link className="button secondary wide" to="/agents">
+            Create an agent
+          </Link>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function BriefPanel({
+  id,
+  brief,
+  onSaved,
+}: {
+  id: string;
+  brief: any;
+  onSaved: () => Promise<void>;
+}) {
+  const [saved, setSaved] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState('');
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    setBusy(true);
+    setMessage('');
+    try {
+      await api(`/conflicts/${id}/brief`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          goal: form.get('goal'),
+          priorities: String(form.get('priorities') ?? '')
+            .split('\n')
+            .filter(Boolean),
+          acceptableCompromises: String(form.get('compromises') ?? '')
+            .split('\n')
+            .filter(Boolean),
+          privateNotes: form.get('notes'),
+        }),
+      });
+      setSaved(true);
+      setMessage('Private brief saved.');
+      await onSaved();
+    } catch (e) {
+      setMessage(e instanceof Error ? e.message : 'Save failed.');
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="brief-panel">
+      <div className="record-title">
+        <div>
+          <h2>Your private brief</h2>
+          <p>Shape what your agent should prioritize without changing the shared case record.</p>
+        </div>
+        <span className={saved ? 'save-state' : 'save-state unsaved'}>
+          {saved ? 'Saved' : 'Unsaved changes'}
+        </span>
+      </div>
+      <PrivacyNote />
+      <form onSubmit={(event) => void submit(event)} onChange={() => setSaved(false)}>
+        <label>
+          What outcome do you want?
+          <textarea
+            name="goal"
+            rows={3}
+            defaultValue={brief?.content.goal ?? ''}
+            placeholder="Help the other party understand why…"
+          />
+        </label>
+        <div className="brief-grid">
+          <label>
+            Priorities <small>One per line</small>
+            <textarea
+              name="priorities"
+              rows={5}
+              defaultValue={brief?.content.priorities?.join('\n') ?? ''}
+            />
+          </label>
+          <label>
+            Acceptable compromises <small>One per line</small>
+            <textarea
+              name="compromises"
+              rows={5}
+              defaultValue={brief?.content.acceptableCompromises?.join('\n') ?? ''}
+            />
+          </label>
+        </div>
+        <label>
+          Private notes
+          <textarea name="notes" rows={6} defaultValue={brief?.content.privateNotes ?? ''} />
+        </label>
+        {message && (
+          <p
+            className={message.includes('saved') ? 'form-success' : 'form-error'}
+            aria-live="polite"
+          >
+            {message}
+          </p>
+        )}
+        <button className="button" disabled={busy || saved}>
+          {busy ? (
+            <>
+              <LoaderCircle className="spin" />
+              Saving…
+            </>
+          ) : (
+            'Save private brief'
+          )}
+        </button>
+      </form>
+    </div>
+  );
+}
+
+function VerdictPanel({ record, status }: { record: any; status: string }) {
+  if (!record)
+    return (
+      <div className="verdict-empty">
+        <Scale />
+        <span className="eyebrow">ADVISORY ASSESSMENT</span>
+        <h2>
+          {status === 'judging'
+            ? 'The Judge is evaluating the case'
+            : 'The verdict is not available yet'}
+        </h2>
+        <p>
+          {status === 'judging'
+            ? 'The structured case record is being validated. You can close this page and return later.'
+            : 'The Judge begins automatically after the protocol completes or a party concedes.'}
+        </p>
+      </div>
+    );
+  const v = record.verdict;
+  return (
+    <div className="verdict-panel">
+      <div className="verdict-hero">
+        <span className="eyebrow">AI-GENERATED ADVISORY ASSESSMENT</span>
+        <StatusBadge status="resolved" />
+        <h2>
+          {v.protocolType === 'debate'
+            ? v.winner === 'tie'
+              ? 'The cases were evenly matched'
+              : `${v.winner === 'party_a' ? 'Party A' : 'Party B'} presented the stronger case`
+            : v.outcome.replaceAll('_', ' ')}
+        </h2>
+        <p>{v.summary}</p>
+        <div className="confidence">
+          <span>Confidence</span>
+          <div>
+            <i style={{ width: `${v.confidence * 100}%` }} />
+          </div>
+          <strong>{Math.round(v.confidence * 100)}%</strong>
+        </div>
+      </div>
+      {v.decidingPoints && (
+        <div className="verdict-section">
+          <h3>Deciding points</h3>
+          <ol>
+            {v.decidingPoints.map((p: string, i: number) => (
+              <li key={p}>
+                <span>{String(i + 1).padStart(2, '0')}</span>
+                {p}
+              </li>
+            ))}
+          </ol>
+        </div>
+      )}
+      {v.scores && (
+        <div className="score-comparison">
+          <Score title="Party A" value={v.scores.partyA.overall} />
+          <Score title="Party B" value={v.scores.partyB.overall} />
+        </div>
+      )}
+      <div className="advisory">
+        <AlertTriangle />
+        <p>
+          <strong>Advisory and non-binding.</strong> This is an AI-generated assessment, not a
+          determination of objective truth or legal arbitration.
+        </p>
+      </div>
+    </div>
+  );
+}
+function Score({ title, value }: { title: string; value: number }) {
+  return (
+    <div>
+      <span>{title}</span>
+      <strong>{value}</strong>
+      <div>
+        <i style={{ width: `${value}%` }} />
+      </div>
+    </div>
+  );
+}
+
+function SettingsPanel({
+  id,
+  data,
+  load,
+}: {
+  id: string;
+  data: RoomData;
+  load: () => Promise<void>;
+}) {
+  const [creating, setCreating] = useState(false);
+  const create = async () => {
+    setCreating(true);
+    const value = await api<any>(`/conflicts/${id}/share-links`, { method: 'POST', body: '{}' });
+    await navigator.clipboard.writeText(value.share_link.url);
+    await load();
+    setCreating(false);
+  };
+  return (
+    <div className="settings-panel">
+      <div className="record-title">
+        <div>
+          <h2>Sharing and case settings</h2>
+          <p>Observer access is always unlisted, read-only, and revocable.</p>
+        </div>
+      </div>
+      <section>
+        <div className="settings-heading">
+          <div>
+            <Link2 />
+            <span>
+              <h3>Unlisted observer links</h3>
+              <p>
+                Safe transcript and verdict only. Private events are filtered from the canonical
+                record.
+              </p>
+            </span>
+          </div>
+          <button className="button" onClick={() => void create()} disabled={creating}>
+            {creating ? (
+              'Creating…'
+            ) : (
+              <>
+                <Share2 />
+                Create and copy link
+              </>
+            )}
+          </button>
+        </div>
+        {data.shareLinks.length ? (
+          <div className="share-link-list">
+            {data.shareLinks.map((link) => (
+              <div key={link.id}>
+                <span>
+                  <Link2 />
+                  <code>{link.id}</code>
+                  <small>
+                    {link.revoked_at
+                      ? 'Revoked'
+                      : link.expires_at
+                        ? `Expires ${new Date(link.expires_at).toLocaleDateString()}`
+                        : 'No expiration'}
+                  </small>
+                </span>
+                {!link.revoked_at && (
+                  <button
+                    className="button secondary"
+                    onClick={async () => {
+                      await api(`/conflicts/${id}/share-links/${link.id}`, { method: 'DELETE' });
+                      await load();
+                    }}
+                  >
+                    Revoke
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="empty-row">No observer links have been created.</p>
+        )}
+      </section>
+      <section>
+        <div className="settings-heading">
+          <div>
+            <FileText />
+            <span>
+              <h3>Case integrity</h3>
+              <p>
+                The transcript is append-only. Resolved arguments and evidence cannot be rewritten.
+              </p>
+            </span>
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+}

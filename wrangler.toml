@@ -1,0 +1,33 @@
+name = "resolveroom"
+main = "src/worker/index.ts"
+compatibility_date = "2026-08-20"
+compatibility_flags = ["nodejs_compat"]
+
+[assets]
+directory = "./dist/client"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "resolveroom"
+database_id = "REPLACE_WITH_PRODUCTION_D1_ID"
+migrations_dir = "migrations"
+
+[[durable_objects.bindings]]
+name = "CONFLICT_ROOMS"
+class_name = "ConflictRoom"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["ConflictRoom"]
+
+[vars]
+ENVIRONMENT = "production"
+JUDGE_PROVIDER = "mock"
+EMAIL_PROVIDER = "console"
+PUBLIC_APP_URL = "https://replace-with-production-domain.example"
+
+[triggers]
+crons = ["* * * * *"]

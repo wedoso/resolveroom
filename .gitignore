@@ -1,0 +1,12 @@
+node_modules/
+dist/
+coverage/
+playwright-report/
+test-results/
+.wrangler/
+wrangler.deploy.toml
+.dev.vars
+.env
+.env.local
+.DS_Store
+.superdesign/tmp/

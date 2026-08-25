@@ -1,0 +1,786 @@
+import { Hono, type Context } from 'hono';
+import { cors } from 'hono/cors';
+import { secureHeaders } from 'hono/secure-headers';
+import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
+import { DomainError, errorStatus } from '@/domain/errors';
+import {
+  agentActionSchema,
+  createConflictSchema,
+  privateBriefSchema,
+  type Agent,
+  type ConflictParty,
+  type User,
+} from '@/domain/types';
+import { opaqueId, secureToken, sha256 } from '@/domain/security';
+import type { Database } from '@/persistence/database';
+import { ConflictService, filterEvents } from '@/services/conflicts';
+import { JudgeService } from '@/judge/service';
+import { MockJudgeProvider, type JudgeProvider } from '@/judge/providers';
+import { openapiDocument } from './openapi';
+import {
+  authorizationUrl,
+  exchangeOAuth,
+  type OAuthCredentials,
+  type OAuthProviderName,
+} from '@/auth/oauth';
+import { NotificationService, type EmailProvider } from '@/notifications/service';
+
+type Identity = { kind: 'human'; user: User } | { kind: 'agent'; agent: Agent };
+type AppEnv = { Variables: { requestId: string; identity?: Identity } };
+type Options = {
+  allowDevelopmentAuth?: boolean;
+  judgeProvider?: JudgeProvider;
+  appUrl?: string;
+  secureCookies?: boolean;
+  oauth?: Partial<Record<OAuthProviderName, OAuthCredentials>>;
+  emailProvider?: EmailProvider;
+};
+const limiter = new Map<string, { count: number; reset: number }>();
+
+const jsonBody = async (c: Context) => {
+  try {
+    return await c.req.json();
+  } catch {
+    throw new DomainError('VALIDATION_ERROR', 'Request body must be valid JSON.', 422);
+  }
+};
+const discardRequestBody = async (c: Context) => {
+  if (c.req.raw.body && !c.req.raw.bodyUsed) await c.req.raw.arrayBuffer();
+};
+const human = (c: Context<AppEnv>): User => {
+  const id = c.get('identity');
+  if (!id || id.kind !== 'human')
+    throw new DomainError('UNAUTHORIZED', 'Human sign-in is required.', 401);
+  return id.user;
+};
+const agentIdentity = (c: Context<AppEnv>): Agent => {
+  const id = c.get('identity');
+  if (!id || id.kind !== 'agent')
+    throw new DomainError('UNAUTHORIZED', 'A valid Agent bearer token is required.', 401);
+  return id.agent;
+};
+const errorBody = (code: string, message: string, requestId: string) => ({
+  error: { code, message, request_id: requestId },
+});
+const safeLogPath = (path: string) =>
+  path.replace(/(\/invites\/)[^/]+/, '$1[redacted]').replace(/(\/share\/)[^/]+/, '$1[redacted]');
+
+export function createApi(db: Database, options: Options = {}) {
+  const app = new Hono<AppEnv>();
+  const notifications = new NotificationService(db, options.emailProvider);
+  const conflicts = new ConflictService(db, notifications);
+  const judge = new JudgeService(
+    db,
+    options.judgeProvider ?? new MockJudgeProvider(),
+    notifications,
+  );
+  app.use('*', secureHeaders());
+  const allowedOrigin = new URL(options.appUrl ?? 'http://localhost:5173').origin;
+  app.use(
+    '/api/*',
+    cors({
+      origin: (origin) => (origin === allowedOrigin ? origin : allowedOrigin),
+      credentials: true,
+    }),
+  );
+  app.use('*', async (c, next) => {
+    const requestId =
+      c.req.header('x-request-id') ?? `req_${crypto.randomUUID().replaceAll('-', '')}`;
+    c.set('requestId', requestId);
+    c.header('x-request-id', requestId);
+    await next();
+  });
+  app.use('/api/v1/*', async (c, next) => {
+    const contentLength = Number(c.req.header('content-length') ?? 0);
+    if (contentLength > 131_072)
+      throw new DomainError('VALIDATION_ERROR', 'Request body exceeds 128 KiB.', 422);
+    const authorization = c.req.header('authorization') ?? '';
+    const session = getCookie(c, 'rr_session') ?? '';
+    const developmentUser = options.allowDevelopmentAuth
+      ? (c.req.header('x-dev-user-id') ?? '')
+      : '';
+    const identityKey = authorization || session || developmentUser;
+    const identityHash = identityKey ? (await sha256(identityKey)).slice(0, 16) : 'anonymous';
+    const conflictKey = c.req.path.match(/\/conflicts\/([^/]+)/)?.[1] ?? 'global';
+    const key = `${c.req.header('cf-connecting-ip') ?? 'local'}:${identityHash}:${conflictKey}:${c.req.path.includes('/actions') ? 'write' : 'read'}`;
+    const now = Date.now();
+    if (limiter.size > 10_000)
+      for (const [candidate, entry] of limiter) if (entry.reset < now) limiter.delete(candidate);
+    const value = limiter.get(key);
+    const limit = c.req.path.includes('/actions') ? 90 : 600;
+    if (!value || value.reset < now) limiter.set(key, { count: 1, reset: now + 60_000 });
+    else if (value.count >= limit)
+      throw new DomainError('RATE_LIMITED', 'Too many requests. Try again shortly.', 429);
+    else value.count += 1;
+    await next();
+  });
+  app.use('/api/v1/*', async (c, next) => {
+    const startedAt = Date.now();
+    await next();
+    const identity = c.get('identity');
+    console.log(
+      JSON.stringify({
+        level: 'info',
+        request_id: c.get('requestId'),
+        method: c.req.method,
+        path: safeLogPath(c.req.path),
+        status: c.res.status,
+        duration_ms: Date.now() - startedAt,
+        conflict_id: c.req.path.match(/\/conflicts\/([^/]+)/)?.[1] ?? null,
+        actor_type: identity?.kind ?? 'anonymous',
+      }),
+    );
+  });
+  app.use('/api/v1/*', async (c, next) => {
+    const auth = c.req.header('authorization');
+    if (auth) {
+      if (!auth.startsWith('Bearer ')) {
+        await discardRequestBody(c);
+        throw new DomainError('UNAUTHORIZED', 'Authorization header is malformed.', 401);
+      }
+      const raw = auth.slice(7);
+      if (!raw.startsWith('rr_agent_')) {
+        await discardRequestBody(c);
+        throw new DomainError('UNAUTHORIZED', 'Bearer credential is not an Agent token.', 401);
+      }
+      const token = await db.findAgentToken(await sha256(raw));
+      if (!token || token.revokedAt) {
+        await discardRequestBody(c);
+        throw new DomainError('TOKEN_REVOKED', 'Agent token is invalid or revoked.', 401);
+      }
+      const ag = await db.getAgent(token.agentId);
+      if (!ag || ag.status !== 'active') {
+        await discardRequestBody(c);
+        throw new DomainError('TOKEN_REVOKED', 'Agent is inactive.', 401);
+      }
+      c.set('identity', { kind: 'agent', agent: ag });
+    }
+    if (!c.get('identity') && options.allowDevelopmentAuth) {
+      const id = c.req.header('x-dev-user-id');
+      if (id) {
+        const user = await db.getUser(id);
+        if (user) c.set('identity', { kind: 'human', user });
+      }
+    }
+    if (!c.get('identity')) {
+      const raw = getCookie(c, 'rr_session');
+      if (raw) {
+        const session = await db.findSession(await sha256(raw));
+        if (session && !session.revokedAt && new Date(session.expiresAt) > new Date()) {
+          const user = await db.getUser(session.userId);
+          if (user && !user.deletedAt) c.set('identity', { kind: 'human', user });
+        }
+      }
+    }
+    await next();
+  });
+
+  app.get('/health', (c) => c.json({ status: 'ok', service: 'resolveroom' }));
+  app.get('/openapi.json', (c) => c.json(openapiDocument));
+  app.get('/api/v1/auth/providers', (c) =>
+    c.json({
+      providers: Object.keys(options.oauth ?? {}),
+      development: Boolean(options.allowDevelopmentAuth),
+    }),
+  );
+  app.post('/api/v1/auth/development', async (c) => {
+    if (!options.allowDevelopmentAuth) throw new DomainError('NOT_FOUND', 'Not found.', 404);
+    const body = await jsonBody(c);
+    const email = String(body.email ?? '')
+      .trim()
+      .toLowerCase();
+    const displayName = String(body.display_name ?? '').trim();
+    if (!email || !displayName)
+      throw new DomainError('VALIDATION_ERROR', 'Email and display name are required.', 422);
+    let user = await db.findUserByEmail(email);
+    const isNewUser = !user;
+    if (!user) {
+      user = {
+        id: opaqueId('usr'),
+        email,
+        displayName,
+        avatarUrl: null,
+        createdAt: new Date().toISOString(),
+        deletedAt: null,
+      };
+      await db.createUser(user);
+    }
+    if (isNewUser)
+      await db.recordAnalytics('user_created', user.id, null, { provider: 'development' });
+    await establishSession(c, db, user.id, Boolean(options.secureCookies));
+    return c.json({ user });
+  });
+  app.get('/api/v1/auth/oauth/:provider/start', async (c) => {
+    const providerName = c.req.param('provider') as OAuthProviderName;
+    const credentials = options.oauth?.[providerName];
+    if (!credentials) throw new DomainError('NOT_FOUND', 'OAuth provider is not configured.', 404);
+    const state = crypto.randomUUID();
+    const requested = c.req.query('return_to') ?? '/dashboard';
+    const returnTo =
+      requested.startsWith('/') && !requested.startsWith('//') ? requested : '/dashboard';
+    setCookie(c, 'rr_oauth_state', state, {
+      httpOnly: true,
+      secure: Boolean(options.secureCookies),
+      sameSite: 'Lax',
+      maxAge: 600,
+      path: '/',
+    });
+    setCookie(c, 'rr_return_to', encodeURIComponent(returnTo), {
+      httpOnly: true,
+      secure: Boolean(options.secureCookies),
+      sameSite: 'Lax',
+      maxAge: 600,
+      path: '/',
+    });
+    const redirect = `${options.appUrl}/api/v1/auth/oauth/${providerName}/callback`;
+    return c.redirect(authorizationUrl(providerName, credentials, redirect, state));
+  });
+  app.get('/api/v1/auth/oauth/:provider/callback', async (c) => {
+    const providerName = c.req.param('provider') as OAuthProviderName;
+    const credentials = options.oauth?.[providerName];
+    if (!credentials) throw new DomainError('NOT_FOUND', 'OAuth provider is not configured.', 404);
+    const state = c.req.query('state');
+    const code = c.req.query('code');
+    if (!state || state !== getCookie(c, 'rr_oauth_state') || !code)
+      throw new DomainError('UNAUTHORIZED', 'OAuth state validation failed.', 401);
+    const profile = await exchangeOAuth(
+      providerName,
+      credentials,
+      `${options.appUrl}/api/v1/auth/oauth/${providerName}/callback`,
+      code,
+    );
+    let user = await db.findUserByAuthIdentity(providerName, profile.subject);
+    if (!user) user = await db.findUserByEmail(profile.email);
+    const isNewUser = !user;
+    if (!user) {
+      user = {
+        id: opaqueId('usr'),
+        email: profile.email,
+        displayName: profile.displayName,
+        avatarUrl: profile.avatarUrl,
+        createdAt: new Date().toISOString(),
+        deletedAt: null,
+      };
+      await db.createUser(user);
+    }
+    if (isNewUser)
+      await db.recordAnalytics('user_created', user.id, null, { provider: providerName });
+    await db.createAuthIdentity(
+      `aid_${crypto.randomUUID().replaceAll('-', '')}`,
+      user.id,
+      providerName,
+      profile.subject,
+      new Date().toISOString(),
+    );
+    await establishSession(c, db, user.id, Boolean(options.secureCookies));
+    const returnTo = decodeURIComponent(getCookie(c, 'rr_return_to') ?? '/dashboard');
+    deleteCookie(c, 'rr_oauth_state', { path: '/' });
+    deleteCookie(c, 'rr_return_to', { path: '/' });
+    return c.redirect(`${options.appUrl}${returnTo}`);
+  });
+  app.post('/api/v1/auth/logout', async (c) => {
+    const raw = getCookie(c, 'rr_session');
+    if (raw) await db.revokeSession(await sha256(raw));
+    deleteCookie(c, 'rr_session', { path: '/' });
+    return c.body(null, 204);
+  });
+  app.get('/api/v1/auth/me', (c) => c.json({ user: human(c) }));
+
+  app.post('/api/v1/conflicts', async (c) => {
+    const user = human(c);
+    const parsed = createConflictSchema.safeParse(await jsonBody(c));
+    if (!parsed.success)
+      throw new DomainError(
+        'VALIDATION_ERROR',
+        parsed.error.issues[0]?.message ?? 'Invalid conflict.',
+        422,
+      );
+    return c.json(await conflicts.createConflict(user.id, parsed.data), 201);
+  });
+  app.get('/api/v1/conflicts', async (c) => {
+    const user = human(c);
+    const list = await db.listConflictsForUser(user.id);
+    const items = await Promise.all(
+      list.map(async (conflict) => {
+        const parties = await db.getParties(conflict.id);
+        const yours = parties.find((p) => p.userId === user.id)!;
+        const opponent = parties.find((p) => p.id !== yours.id)!;
+        const events = await db.listEvents(conflict.id);
+        const current = authoritativeTurn(conflict, parties, events);
+        return {
+          ...publicConflict(conflict),
+          your_party: yours.role,
+          opponent: { display_name: opponent.displayName, joined: Boolean(opponent.userId) },
+          current_turn: current,
+        };
+      }),
+    );
+    return c.json({ conflicts: items });
+  });
+  app.get('/api/v1/conflicts/:id', async (c) => {
+    const identity = c.get('identity');
+    if (!identity) throw new DomainError('UNAUTHORIZED', 'Authentication is required.', 401);
+    const id = c.req.param('id');
+    const conflict = await db.getConflict(id);
+    if (!conflict) throw new DomainError('NOT_FOUND', 'Conflict not found.', 404);
+    const parties = await db.getParties(id);
+    let party: ConflictParty | null = null;
+    if (identity.kind === 'human')
+      party = parties.find((p) => p.userId === identity.user.id) ?? null;
+    else party = parties.find((p) => p.agentId === identity.agent.id) ?? null;
+    if (!party) throw new DomainError('NOT_FOUND', 'Conflict not found.', 404);
+    const events = await db.listEvents(id);
+    return c.json({
+      ...publicConflict(conflict),
+      your_party: party.role,
+      current_turn: authoritativeTurn(conflict, parties, events),
+      parties: parties.map((p) => ({
+        id: p.id,
+        role: p.role,
+        display_name: p.displayName,
+        agent_bound: Boolean(p.agentId),
+        ready: p.ready,
+        joined: Boolean(p.userId),
+      })),
+    });
+  });
+  app.get('/api/v1/conflicts/:id/events', async (c) => {
+    const identity = c.get('identity');
+    if (!identity) throw new DomainError('UNAUTHORIZED', 'Authentication is required.', 401);
+    const id = c.req.param('id');
+    const parties = await db.getParties(id);
+    const party =
+      identity.kind === 'human'
+        ? parties.find((p) => p.userId === identity.user.id)
+        : parties.find((p) => p.agentId === identity.agent.id);
+    if (!party) throw new DomainError('NOT_FOUND', 'Conflict not found.', 404);
+    return c.json({
+      events: filterEvents(await db.listEvents(id), { kind: 'participant', partyId: party.id }),
+    });
+  });
+  app.get('/api/v1/conflicts/:id/brief', async (c) => {
+    const identity = c.get('identity');
+    if (!identity) throw new DomainError('UNAUTHORIZED', 'Authentication is required.', 401);
+    const id = c.req.param('id');
+    const parties = await db.getParties(id);
+    const party =
+      identity.kind === 'human'
+        ? parties.find((p) => p.userId === identity.user.id)
+        : parties.find((p) => p.agentId === identity.agent.id);
+    if (!party) throw new DomainError('NOT_FOUND', 'Conflict not found.', 404);
+    return c.json({ brief: await db.getBrief(id, party.id) });
+  });
+  app.put('/api/v1/conflicts/:id/brief', async (c) => {
+    const user = human(c);
+    const parsed = privateBriefSchema.safeParse(await jsonBody(c));
+    if (!parsed.success)
+      throw new DomainError(
+        'VALIDATION_ERROR',
+        parsed.error.issues[0]?.message ?? 'Invalid brief.',
+        422,
+      );
+    return c.json({ brief: await conflicts.saveBrief(c.req.param('id'), user.id, parsed.data) });
+  });
+
+  app.post('/api/v1/conflicts/:id/invite', async (c) => {
+    await discardRequestBody(c);
+    const user = human(c);
+    const value = await conflicts.createInvite(c.req.param('id'), user.id);
+    return c.json({
+      invite: {
+        id: value.invitation.id,
+        expires_at: value.invitation.expiresAt,
+        url: `${options.appUrl ?? ''}/join/${value.token}`,
+      },
+    });
+  });
+  app.post('/api/v1/invites/:token/accept', async (c) => {
+    await discardRequestBody(c);
+    return c.json(await conflicts.acceptInvite(c.req.param('token'), human(c).id));
+  });
+  app.delete('/api/v1/conflicts/:id/invites/:inviteId', async (c) => {
+    await conflicts.revokeInvite(c.req.param('id'), c.req.param('inviteId'), human(c).id);
+    return c.body(null, 204);
+  });
+  app.get('/api/v1/invites/:token', async (c) => {
+    const invite = await db.findInvitation(await sha256(c.req.param('token')));
+    if (!invite) throw new DomainError('NOT_FOUND', 'Invitation not found.', 404);
+    const conflict = await db.getConflict(invite.conflictId);
+    const parties = await db.getParties(invite.conflictId);
+    return c.json({
+      invite: {
+        expires_at: invite.expiresAt,
+        accepted: Boolean(invite.acceptedAt),
+        revoked: Boolean(invite.revokedAt),
+      },
+      conflict: conflict && publicConflict(conflict),
+      invited_by: parties.find((p) => p.role === 'party_a')?.displayName,
+    });
+  });
+  app.post('/api/v1/conflicts/:id/ready', async (c) => {
+    const body = await jsonBody(c);
+    const result = await conflicts.setReady(c.req.param('id'), human(c).id, body.ready !== false);
+    if (result.started) await runJudgeIfNeeded(db, judge, c.req.param('id'));
+    return c.json(result);
+  });
+  app.post('/api/v1/conflicts/:id/pause', async (c) => {
+    await discardRequestBody(c);
+    return c.json({ conflict: await conflicts.pause(c.req.param('id'), human(c).id) });
+  });
+  app.post('/api/v1/conflicts/:id/resume', async (c) => {
+    await discardRequestBody(c);
+    return c.json({ conflict: await conflicts.resume(c.req.param('id'), human(c).id) });
+  });
+  app.post('/api/v1/conflicts/:id/cancel', async (c) => {
+    await discardRequestBody(c);
+    return c.json({ conflict: await conflicts.cancel(c.req.param('id'), human(c).id) });
+  });
+  app.post('/api/v1/conflicts/:id/concede', async (c) => {
+    await discardRequestBody(c);
+    const value = await conflicts.concede(c.req.param('id'), human(c).id);
+    const verdict = await judge.run(c.req.param('id'));
+    return c.json({ conflict: value, verdict });
+  });
+
+  app.post('/api/v1/agents', async (c) => {
+    const user = human(c);
+    const body = await jsonBody(c);
+    const name = String(body.name ?? '').trim();
+    if (name.length < 2 || name.length > 120)
+      throw new DomainError('VALIDATION_ERROR', 'Agent name must be 2–120 characters.', 422);
+    const timestamp = new Date().toISOString();
+    const value: Agent = {
+      id: opaqueId('agt'),
+      ownerUserId: user.id,
+      name,
+      status: 'active',
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    await db.createAgent(value);
+    await db.recordAnalytics('agent_created', user.id, null, { agent_id: value.id });
+    return c.json({ agent: value }, 201);
+  });
+  app.get('/api/v1/agents', async (c) => c.json({ agents: await db.listAgents(human(c).id) }));
+  app.get('/api/v1/agents/:id', async (c) => {
+    const user = human(c);
+    const value = await db.getAgent(c.req.param('id'));
+    if (!value || value.ownerUserId !== user.id)
+      throw new DomainError('NOT_FOUND', 'Agent not found.', 404);
+    return c.json({ agent: value });
+  });
+  app.post('/api/v1/agents/:id/tokens', async (c) => {
+    const user = human(c);
+    const ag = await db.getAgent(c.req.param('id'));
+    if (!ag || ag.ownerUserId !== user.id)
+      throw new DomainError('NOT_FOUND', 'Agent not found.', 404);
+    const raw = secureToken('rr_agent_');
+    const timestamp = new Date().toISOString();
+    const token = {
+      id: opaqueId('tok'),
+      agentId: ag.id,
+      tokenHash: await sha256(raw),
+      tokenPrefix: raw.slice(0, 18),
+      createdAt: timestamp,
+      lastUsedAt: null,
+      revokedAt: null,
+    };
+    await db.createAgentToken(token);
+    return c.json(
+      {
+        token: { id: token.id, value: raw, prefix: token.tokenPrefix, created_at: timestamp },
+        warning: 'This credential is shown once. Store it securely.',
+      },
+      201,
+    );
+  });
+  app.post('/api/v1/agents/:id/tokens/rotate', async (c) => {
+    const user = human(c);
+    const ag = await db.getAgent(c.req.param('id'));
+    if (!ag || ag.ownerUserId !== user.id)
+      throw new DomainError('NOT_FOUND', 'Agent not found.', 404);
+    await db.revokeAllAgentTokens(ag.id);
+    const raw = secureToken('rr_agent_');
+    const timestamp = new Date().toISOString();
+    const token = {
+      id: opaqueId('tok'),
+      agentId: ag.id,
+      tokenHash: await sha256(raw),
+      tokenPrefix: raw.slice(0, 18),
+      createdAt: timestamp,
+      lastUsedAt: null,
+      revokedAt: null,
+    };
+    await db.createAgentToken(token);
+    return c.json(
+      {
+        token: { id: token.id, value: raw, prefix: token.tokenPrefix, created_at: timestamp },
+        warning: 'Previous credentials were revoked. This new credential is shown once.',
+      },
+      201,
+    );
+  });
+  app.delete('/api/v1/agents/:id/tokens/:tokenId', async (c) => {
+    const ok = await db.revokeAgentToken(c.req.param('tokenId'), human(c).id);
+    if (!ok) throw new DomainError('NOT_FOUND', 'Credential not found.', 404);
+    return c.body(null, 204);
+  });
+  app.post('/api/v1/conflicts/:id/agent', async (c) => {
+    const body = await jsonBody(c);
+    return c.json({
+      party: await conflicts.bindAgent(c.req.param('id'), human(c).id, String(body.agent_id ?? '')),
+    });
+  });
+  app.delete('/api/v1/conflicts/:id/agent', async (c) =>
+    c.json({ party: await conflicts.unbindAgent(c.req.param('id'), human(c).id) }),
+  );
+
+  app.get('/api/v1/agent/tasks', async (c) => {
+    const ag = agentIdentity(c);
+    const all = await allAgentConflicts(db, ag.id);
+    const tasks = await Promise.all(
+      all.map(async ({ conflict, party, parties }) => {
+        const turn = authoritativeTurn(conflict, parties, await db.listEvents(conflict.id));
+        const isYourTurn = Boolean(turn && turn.party_id === party.id);
+        return {
+          conflict_id: conflict.id,
+          title: conflict.title,
+          status: conflict.status,
+          phase: conflict.currentPhase,
+          your_party: party.role,
+          your_turn: isYourTurn,
+          allowed_actions: isYourTurn && turn ? turn.allowed_actions : [],
+          deadline_at: conflict.deadlineAt,
+        };
+      }),
+    );
+    return c.json({ tasks });
+  });
+  app.post('/api/v1/conflicts/:id/actions', async (c) => {
+    const ag = agentIdentity(c);
+    const parsed = agentActionSchema.safeParse(await jsonBody(c));
+    if (!parsed.success)
+      throw new DomainError(
+        'VALIDATION_ERROR',
+        parsed.error.issues[0]?.message ?? 'Invalid action.',
+        422,
+      );
+    const result = await conflicts.submitAction(c.req.param('id'), ag.id, parsed.data);
+    console.log(
+      JSON.stringify({
+        level: 'info',
+        event: 'agent_action_accepted',
+        request_id: c.get('requestId'),
+        conflict_id: c.req.param('id'),
+        event_id: result.event.id,
+        actor_type: 'agent',
+        duplicate: result.duplicate,
+      }),
+    );
+    if (result.needsJudging) await judge.run(c.req.param('id'));
+    return c.json({
+      event_id: result.event.id,
+      sequence_number: result.event.sequenceNumber,
+      accepted: true,
+      duplicate: result.duplicate,
+    });
+  });
+  app.post('/api/v1/conflicts/:id/judge', async (c) => {
+    await discardRequestBody(c);
+    await conflicts.requireParticipant(c.req.param('id'), human(c).id);
+    return c.json({ verdict: await judge.run(c.req.param('id')) });
+  });
+  app.get('/api/v1/conflicts/:id/verdict', async (c) => {
+    await conflicts.requireParticipant(c.req.param('id'), human(c).id);
+    const value = await db.getVerdict(c.req.param('id'));
+    if (!value) throw new DomainError('NOT_FOUND', 'Verdict is not available.', 404);
+    return c.json({ verdict: value });
+  });
+
+  app.post('/api/v1/conflicts/:id/share-links', async (c) => {
+    const user = human(c);
+    await conflicts.requireOwner(c.req.param('id'), user.id);
+    const body = await jsonBody(c);
+    const raw = secureToken('rr_share_');
+    const link = {
+      id: opaqueId('shr'),
+      conflictId: c.req.param('id'),
+      tokenHash: await sha256(raw),
+      expiresAt: body.expires_at ?? null,
+      revokedAt: null,
+      createdByUserId: user.id,
+      createdAt: new Date().toISOString(),
+    };
+    await db.createShareLink(link);
+    await db.recordAnalytics('share_link_created', user.id, link.conflictId, {
+      share_id: link.id,
+    });
+    return c.json(
+      {
+        share_link: {
+          id: link.id,
+          url: `${options.appUrl ?? ''}/share/${raw}`,
+          expires_at: link.expiresAt,
+          created_at: link.createdAt,
+        },
+      },
+      201,
+    );
+  });
+  app.get('/api/v1/conflicts/:id/share-links', async (c) => {
+    const user = human(c);
+    await conflicts.requireOwner(c.req.param('id'), user.id);
+    return c.json({
+      share_links: (await db.listShareLinks(c.req.param('id'))).map((s) => ({
+        id: s.id,
+        expires_at: s.expiresAt,
+        revoked_at: s.revokedAt,
+        created_at: s.createdAt,
+      })),
+    });
+  });
+  app.delete('/api/v1/conflicts/:id/share-links/:shareId', async (c) => {
+    const user = human(c);
+    await conflicts.requireOwner(c.req.param('id'), user.id);
+    if (!(await db.revokeShareLink(c.req.param('shareId'), c.req.param('id'))))
+      throw new DomainError('NOT_FOUND', 'Share link not found.', 404);
+    return c.body(null, 204);
+  });
+  app.get('/api/v1/share/:token', async (c) => {
+    const link = await db.findShareLink(await sha256(c.req.param('token')));
+    if (!link || link.revokedAt || (link.expiresAt && new Date(link.expiresAt) <= new Date()))
+      throw new DomainError('NOT_FOUND', 'This shared record is unavailable.', 404);
+    const conflict = await db.getConflict(link.conflictId);
+    if (!conflict) throw new DomainError('NOT_FOUND', 'This shared record is unavailable.', 404);
+    const parties = await db.getParties(link.conflictId);
+    return c.json({
+      conflict: publicConflict(conflict),
+      parties: parties.map((p) => ({ role: p.role, display_name: p.displayName })),
+      events: filterEvents(await db.listEvents(link.conflictId), { kind: 'observer' }),
+      verdict: await db.getVerdict(link.conflictId),
+      read_only: true,
+    });
+  });
+  app.get('/api/v1/notifications', async (c) =>
+    c.json({ notifications: await db.listNotifications(human(c).id) }),
+  );
+  app.post('/api/v1/notifications/:id/read', async (c) => {
+    if (!(await db.markNotificationRead(c.req.param('id'), human(c).id)))
+      throw new DomainError('NOT_FOUND', 'Notification not found.', 404);
+    return c.json({ read: true });
+  });
+
+  app.notFound((c) =>
+    c.json(
+      errorBody(
+        'NOT_FOUND',
+        'Route not found.',
+        c.get('requestId') ?? `req_${crypto.randomUUID()}`,
+      ),
+      404,
+    ),
+  );
+  app.onError((error, c) => {
+    const requestId = c.get('requestId') ?? `req_${crypto.randomUUID()}`;
+    if (error instanceof DomainError)
+      return c.json(
+        errorBody(error.code, error.message, requestId),
+        errorStatus[error.code] as any,
+      );
+    console.error(
+      JSON.stringify({
+        level: 'error',
+        request_id: requestId,
+        method: c.req.method,
+        path: safeLogPath(c.req.path),
+        conflict_id: c.req.path.match(/\/conflicts\/([^/]+)/)?.[1] ?? null,
+        actor_type: c.get('identity')?.kind ?? 'anonymous',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      }),
+    );
+    return c.json(errorBody('INTERNAL_ERROR', 'An unexpected error occurred.', requestId), 500);
+  });
+  return app;
+}
+
+function publicConflict(c: any) {
+  return {
+    id: c.id,
+    title: c.title,
+    description: c.description,
+    protocol_type: c.protocolType,
+    status: c.status,
+    phase: c.currentPhase,
+    round: c.currentRound,
+    max_rounds: c.maxRounds,
+    deadline_at: c.deadlineAt,
+    turn_timeout_seconds: c.turnTimeoutSeconds,
+    created_at: c.createdAt,
+    updated_at: c.updatedAt,
+    resolved_at: c.resolvedAt,
+  };
+}
+function authoritativeTurn(conflict: any, parties: ConflictParty[], events: any[]) {
+  if (conflict.status !== 'active') return null;
+  const first = parties.find((p) => p.id === conflict.firstSpeakerPartyId)?.role ?? 'party_a';
+  const phaseIndex = Math.max(
+    0,
+    ['opening', 'rebuttal', 'closing'].indexOf(conflict.currentPhase ?? 'opening'),
+  );
+  const phaseStart = events.findLastIndex((e) => e.eventType === 'phase_started');
+  const used = events
+    .slice(phaseStart + 1)
+    .filter((e) =>
+      ['argument_submitted', 'rebuttal_submitted', 'closing_statement_submitted'].includes(
+        e.eventType,
+      ),
+    ).length;
+  const firstThisPhase = phaseIndex % 2 === 0 ? first : first === 'party_a' ? 'party_b' : 'party_a';
+  const role = used === 0 ? firstThisPhase : firstThisPhase === 'party_a' ? 'party_b' : 'party_a';
+  const party = parties.find((p) => p.role === role)!;
+  const primary =
+    conflict.currentPhase === 'opening'
+      ? 'argument'
+      : conflict.currentPhase === 'rebuttal'
+        ? 'rebuttal'
+        : 'closing_statement';
+  return {
+    party_id: party.id,
+    party_role: role,
+    allowed_actions: [primary, 'evidence', 'concede'],
+  };
+}
+async function allAgentConflicts(db: Database, agentId: string) {
+  const list: any[] = [];
+  for (const agOwner of [(await db.getAgent(agentId))?.ownerUserId].filter(Boolean) as string[]) {
+    for (const conflict of await db.listConflictsForUser(agOwner)) {
+      const parties = await db.getParties(conflict.id);
+      const party = parties.find((p) => p.agentId === agentId);
+      if (party) list.push({ conflict, party, parties });
+    }
+  }
+  return list;
+}
+async function runJudgeIfNeeded(db: Database, judge: JudgeService, id: string) {
+  const conflict = await db.getConflict(id);
+  if (conflict?.status === 'judging') await judge.run(id);
+}
+async function establishSession(c: Context, db: Database, userId: string, secure: boolean) {
+  const raw = secureToken('rr_session_');
+  const createdAt = new Date().toISOString();
+  await db.createSession({
+    id: `ses_${crypto.randomUUID().replaceAll('-', '')}`,
+    userId,
+    tokenHash: await sha256(raw),
+    expiresAt: new Date(Date.now() + 30 * 86400_000).toISOString(),
+    createdAt,
+    revokedAt: null,
+  });
+  setCookie(c, 'rr_session', raw, {
+    httpOnly: true,
+    secure,
+    sameSite: 'Lax',
+    maxAge: 30 * 86400,
+    path: '/',
+  });
+}
