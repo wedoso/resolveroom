@@ -43,7 +43,7 @@ The protocol engine is pure TypeScript. The coordinator owns turn order, transit
 
 ## Requirements
 
-- Node.js 20 or newer
+- Node.js 22 or newer
 - npm 10 or newer
 - A Cloudflare account only for remote deployment
 - Playwright Chromium and WebKit for browser tests
