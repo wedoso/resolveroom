@@ -8,10 +8,18 @@ import {
   createConflictSchema,
   privateBriefSchema,
   type Agent,
+  type AgentPairing,
+  type AgentToken,
   type ConflictParty,
   type User,
 } from '@/domain/types';
-import { opaqueId, secureToken, sha256 } from '@/domain/security';
+import {
+  normalizePairingCode,
+  opaqueId,
+  securePairingCode,
+  secureToken,
+  sha256,
+} from '@/domain/security';
 import type { Database } from '@/persistence/database';
 import { ConflictService, filterEvents } from '@/services/conflicts';
 import { JudgeService } from '@/judge/service';
@@ -102,12 +110,21 @@ export function createApi(db: Database, options: Options = {}) {
     const identityKey = authorization || session || developmentUser;
     const identityHash = identityKey ? (await sha256(identityKey)).slice(0, 16) : 'anonymous';
     const conflictKey = c.req.path.match(/\/conflicts\/([^/]+)/)?.[1] ?? 'global';
-    const key = `${c.req.header('cf-connecting-ip') ?? 'local'}:${identityHash}:${conflictKey}:${c.req.path.includes('/actions') ? 'write' : 'read'}`;
+    const rateBucket = c.req.path.includes('/agent-pairings/exchange')
+      ? 'pairing'
+      : c.req.path.includes('/actions')
+        ? 'write'
+        : 'read';
+    const key = `${c.req.header('cf-connecting-ip') ?? 'local'}:${identityHash}:${conflictKey}:${rateBucket}`;
     const now = Date.now();
     if (limiter.size > 10_000)
       for (const [candidate, entry] of limiter) if (entry.reset < now) limiter.delete(candidate);
     const value = limiter.get(key);
-    const limit = c.req.path.includes('/actions') ? 90 : 600;
+    const limit = c.req.path.includes('/agent-pairings/exchange')
+      ? 20
+      : c.req.path.includes('/actions')
+        ? 90
+        : 600;
     if (!value || value.reset < now) limiter.set(key, { count: 1, reset: now + 60_000 });
     else if (value.count >= limit)
       throw new DomainError('RATE_LIMITED', 'Too many requests. Try again shortly.', 429);
@@ -177,6 +194,34 @@ export function createApi(db: Database, options: Options = {}) {
 
   app.get('/health', (c) => c.json({ status: 'ok', service: 'resolveroom' }));
   app.get('/openapi.json', (c) => c.json(openapiDocument));
+  app.get('/.well-known/resolveroom-agent.json', (c) =>
+    c.json({
+      protocol: 'resolveroom-agent-pairing',
+      version: '1.0',
+      product: 'ResolveRoom',
+      origin: allowedOrigin,
+      pairing: {
+        exchange_url: `${allowedOrigin}/api/v1/agent-pairings/exchange`,
+        method: 'POST',
+        code_format: 'XXXX-XXXX-XXXX',
+        code_ttl_seconds: 600,
+        single_use: true,
+      },
+      cli: {
+        command: 'npx --yes github:wedoso/resolveroom#main',
+        pair: `npx --yes github:wedoso/resolveroom#main pair <PAIRING_CODE> --origin ${allowedOrigin}`,
+      },
+      runtime: {
+        tasks: `${allowedOrigin}/api/v1/agent/tasks`,
+        openapi: `${allowedOrigin}/openapi.json`,
+      },
+      security: {
+        pairing_code_is_long_lived_credential: false,
+        credential_is_returned_once: true,
+        never_print_credential: true,
+      },
+    }),
+  );
   app.get('/api/v1/auth/providers', (c) =>
     c.json({
       providers: Object.keys(options.oauth ?? {}),
@@ -334,14 +379,18 @@ export function createApi(db: Database, options: Options = {}) {
       ...publicConflict(conflict),
       your_party: party.role,
       current_turn: authoritativeTurn(conflict, parties, events),
-      parties: parties.map((p) => ({
-        id: p.id,
-        role: p.role,
-        display_name: p.displayName,
-        agent_bound: Boolean(p.agentId),
-        ready: p.ready,
-        joined: Boolean(p.userId),
-      })),
+      parties: await Promise.all(
+        parties.map(async (p) => ({
+          id: p.id,
+          role: p.role,
+          display_name: p.displayName,
+          agent_bound: Boolean(p.agentId),
+          agent_connected: p.agentId ? await db.hasActiveAgentToken(p.agentId) : false,
+          ...(p.id === party.id && p.agentId ? { agent_id: p.agentId } : {}),
+          ready: p.ready,
+          joined: Boolean(p.userId),
+        })),
+      ),
     });
   });
   app.get('/api/v1/conflicts/:id/events', async (c) => {
@@ -535,6 +584,116 @@ export function createApi(db: Database, options: Options = {}) {
     c.json({ party: await conflicts.unbindAgent(c.req.param('id'), human(c).id) }),
   );
 
+  app.post('/api/v1/conflicts/:id/agent/pairings', async (c) => {
+    const user = human(c);
+    const body = await jsonBody(c);
+    const conflictId = c.req.param('id');
+    let { conflict, party } = await conflicts.requireParticipant(conflictId, user.id);
+    if (['resolved', 'cancelled', 'expired'].includes(conflict.status))
+      throw new DomainError('INVALID_STATE', 'This conflict no longer accepts an agent.', 409);
+
+    let ag = party.agentId ? await db.getAgent(party.agentId) : null;
+    if (!ag || ag.status !== 'active') {
+      const timestamp = new Date().toISOString();
+      const requestedName = String(body.agent_name ?? '').trim();
+      ag = {
+        id: opaqueId('agt'),
+        ownerUserId: user.id,
+        name:
+          requestedName.length >= 2 && requestedName.length <= 120
+            ? requestedName
+            : `${user.displayName}'s Codex agent`,
+        status: 'active',
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      };
+      await db.createAgent(ag);
+      await db.recordAnalytics('agent_created', user.id, conflictId, { agent_id: ag.id });
+      party = await conflicts.bindAgent(conflictId, user.id, ag.id);
+      conflict = (await db.getConflict(conflictId)) ?? conflict;
+    }
+
+    await db.revokeOpenAgentPairings(ag.id);
+    const code = securePairingCode();
+    const createdAt = new Date().toISOString();
+    const pairing: AgentPairing = {
+      id: opaqueId('prg'),
+      agentId: ag.id,
+      conflictId,
+      codeHash: await sha256(code),
+      expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
+      claimedAt: null,
+      revokedAt: null,
+      clientName: null,
+      createdAt,
+    };
+    await db.createAgentPairing(pairing);
+    const command = `npx --yes github:wedoso/resolveroom#main pair ${code} --origin ${allowedOrigin}`;
+    return c.json(
+      {
+        pairing: pairingView(pairing),
+        code,
+        instruction: `Connect this Codex to ResolveRoom for “${conflict.title}”. Run \`${command}\`. Then inspect your assigned task, use only allowed actions, protect the private brief, and continue monitoring until the conflict resolves. Never print or reveal the credential returned during pairing.`,
+        command,
+        agent: { id: ag.id, name: ag.name },
+        party: { id: party.id, role: party.role, agent_bound: true },
+      },
+      201,
+    );
+  });
+
+  app.post('/api/v1/agent-pairings/exchange', async (c) => {
+    const body = await jsonBody(c);
+    const code = normalizePairingCode(String(body.code ?? ''));
+    const clientName = String(body.client_name ?? 'Codex')
+      .trim()
+      .slice(0, 120);
+    if (!code || clientName.length < 2)
+      throw new DomainError(
+        'VALIDATION_ERROR',
+        'A valid pairing code and client name are required.',
+        422,
+      );
+    const raw = secureToken('rr_agent_');
+    const createdAt = new Date().toISOString();
+    const token: AgentToken = {
+      id: opaqueId('tok'),
+      agentId: '',
+      tokenHash: await sha256(raw),
+      tokenPrefix: raw.slice(0, 18),
+      createdAt,
+      lastUsedAt: null,
+      revokedAt: null,
+    };
+    const claimed = await db.claimAgentPairing(await sha256(code), clientName, token);
+    if (!claimed)
+      throw new DomainError(
+        'NOT_FOUND',
+        'This pairing code is invalid, expired, or already used.',
+        404,
+      );
+    token.agentId = claimed.agentId;
+    const ag = await db.getAgent(claimed.agentId);
+    if (!ag) throw new DomainError('NOT_FOUND', 'This pairing code is unavailable.', 404);
+    return c.json({
+      credential: raw,
+      credential_type: 'Bearer',
+      agent: { id: ag.id, name: ag.name },
+      conflict_id: claimed.conflictId,
+      api_base_url: `${allowedOrigin}/api/v1`,
+      warning: 'This credential is returned once. Store it securely and never print it.',
+    });
+  });
+
+  app.get('/api/v1/agent-pairings/:id', async (c) => {
+    const user = human(c);
+    const pairing = await db.getAgentPairing(c.req.param('id'));
+    const ag = pairing ? await db.getAgent(pairing.agentId) : null;
+    if (!pairing || !ag || ag.ownerUserId !== user.id)
+      throw new DomainError('NOT_FOUND', 'Pairing not found.', 404);
+    return c.json({ pairing: pairingView(pairing) });
+  });
+
   app.get('/api/v1/agent/tasks', async (c) => {
     const ag = agentIdentity(c);
     const all = await allAgentConflicts(db, ag.id);
@@ -718,6 +877,25 @@ function publicConflict(c: any) {
     created_at: c.createdAt,
     updated_at: c.updatedAt,
     resolved_at: c.resolvedAt,
+  };
+}
+function pairingView(pairing: AgentPairing) {
+  const status = pairing.revokedAt
+    ? 'revoked'
+    : pairing.claimedAt
+      ? 'connected'
+      : new Date(pairing.expiresAt) <= new Date()
+        ? 'expired'
+        : 'waiting';
+  return {
+    id: pairing.id,
+    agent_id: pairing.agentId,
+    conflict_id: pairing.conflictId,
+    status,
+    expires_at: pairing.expiresAt,
+    claimed_at: pairing.claimedAt,
+    client_name: pairing.clientName,
+    created_at: pairing.createdAt,
   };
 }
 function authoritativeTurn(conflict: any, parties: ConflictParty[], events: any[]) {

@@ -12,19 +12,22 @@
         ".superdesign/design-system.md",
         ".superdesign/init/theme.md",
         "src/web/components.tsx",
-        "src/web/pages.tsx:656:809",
+        "src/web/pages.tsx:656:812",
+        "src/web/conflict-room.tsx:456:650",
         "src/web/styles.css:1:260",
         "src/web/styles.css:600:720",
         "src/web/styles.css:988:1045",
-        "src/web/styles.css:1205:1295",
-        "src/web/styles.css:2127:2325"
+        "src/web/styles.css:1205:1305",
+        "src/web/styles.css:1747:1882",
+        "src/web/styles.css:2320:2420"
       ],
       "fingerprints": {
         ".superdesign/design-system.md": "cc81bcf0fc4a8556c66fb5f41090a8172500a285a0f9c83ea701994a94195833",
         ".superdesign/init/theme.md": "7879434ef33dd84b5816af690d96c6a0c1419b267fbbced661379757410b6cd9",
-        "src/web/components.tsx": "46292067624640e25ddd78a9ac582586fd9842316a95f2f02a81c51460096467",
-        "src/web/pages.tsx": "00ba3a6a3ffd7c37a812d6284b3d89900a22e308fcb831161b3ef2478e51ce4e",
-        "src/web/styles.css": "7f4c483a485e929502723da5c52d15c775913a6409fda254abcba4bccfec2b47"
+        "src/web/components.tsx": "c6f1f2717eb3e579c988c961ebc87463df31485bca2e4664ced5ed62810a8f27",
+        "src/web/pages.tsx": "fec4f64a3a96650d61eef87dd115602baac6bff36ef822ef8445eeed5382e70",
+        "src/web/conflict-room.tsx": "3698979d6c8f7a4589168eeb22f4a5c2159d11ce83066c7d1bbbe0ae9e7d85e2",
+        "src/web/styles.css": "ca22e82f247e9fd98a2efa5dc84fdba9e7b28e8fe35748a7a0c095379a4decf7"
       },
       "components": [
         {
@@ -40,7 +43,7 @@
           "currentVersion": 2
         }
       },
-      "updatedAt": "2026-08-25T06:21:30Z"
+      "updatedAt": "2026-08-25T07:01:40Z"
     }
   }
 }

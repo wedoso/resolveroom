@@ -1,3 +1,4 @@
+import AxeBuilder from '@axe-core/playwright';
 import { expect, test, type APIRequestContext } from '@playwright/test';
 
 const headers = (id: string) => ({ 'x-dev-user-id': id });
@@ -159,6 +160,11 @@ test('operational endpoints and browser security policy are deployment-ready', a
   const specification = await body(await request.get('/openapi.json'));
   expect(specification.openapi).toBe('3.1.0');
   expect(Object.keys(specification.paths).length).toBeGreaterThanOrEqual(30);
+  expect(specification.servers).toEqual([{ url: '/api/v1' }]);
+  expect(specification.paths['/agent-pairings/exchange']).toBeTruthy();
+  const discovery = await body(await request.get('/.well-known/resolveroom-agent.json'));
+  expect(discovery.pairing).toMatchObject({ single_use: true, code_ttl_seconds: 600 });
+  expect(JSON.stringify(discovery)).not.toContain('rr_agent_');
   const document = await request.get('/');
   const csp = document.headers()['content-security-policy'];
   expect(csp).toContain("default-src 'self'");
@@ -181,6 +187,62 @@ test('landing and conflict creation are polished and functional', async ({ page 
   await page.getByRole('button', { name: 'Create conflict' }).click();
   await expect(page.getByRole('heading', { name: 'Invite the other participant' })).toBeVisible();
   await expect(page.getByText('Private invitation link')).toBeVisible();
+});
+
+test('a participant pairs Codex from the conflict with one short-lived instruction', async ({
+  page,
+  request,
+}) => {
+  const suffix = Date.now();
+  const signedIn = await body(
+    await page.request.post('/api/v1/auth/development', {
+      data: { email: `pairing.ui.${suffix}@example.test`, display_name: 'Pairing UI' },
+    }),
+  );
+  const created = await body(
+    await page.request.post('/api/v1/conflicts', {
+      data: {
+        title: `One-instruction pairing ${suffix}`,
+        description: 'Connect Codex without copying a long-lived credential.',
+        protocol_type: 'debate',
+        max_rounds: 3,
+      },
+    }),
+  );
+
+  await page.goto(`/conflicts/${created.conflict.id}`);
+  await expect(page.getByText('YOUR REPRESENTATIVE')).toBeVisible();
+  await page.getByRole('button', { name: 'Connect Codex' }).click();
+  await expect(page.getByRole('heading', { name: 'Pair with Codex' })).toBeVisible();
+  await expect(page.getByText('ONE-TIME PAIRING CODE')).toBeVisible();
+  const code = (await page.locator('.pairing-code strong').textContent())?.trim();
+  expect(code).toMatch(/^[A-HJ-NP-Z2-9]{4}(?:-[A-HJ-NP-Z2-9]{4}){2}$/);
+  await expect(page.getByRole('button', { name: 'Copy instruction for Codex' })).toBeVisible();
+  await expect(page.getByText(/works once, expires in ten minutes/)).toBeVisible();
+  const accessibility = await new AxeBuilder({ page }).include('.dialog').analyze();
+  const serious = accessibility.violations.filter((violation) =>
+    ['serious', 'critical'].includes(violation.impact ?? ''),
+  );
+  expect(serious, serious.map((item) => `${item.id}: ${item.help}`).join('\n')).toEqual([]);
+
+  const exchanged = await body(
+    await request.post('/api/v1/agent-pairings/exchange', {
+      data: { code, client_name: 'Codex browser E2E' },
+    }),
+  );
+  expect(exchanged.credential).toMatch(/^rr_agent_/);
+  expect(
+    (
+      await request.post('/api/v1/agent-pairings/exchange', {
+        data: { code, client_name: 'Replay attempt' },
+      })
+    ).status(),
+  ).toBe(404);
+
+  await expect(page.getByText('Secure connection established')).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText(/Codex browser E2E connected/)).toBeVisible();
+  expect(await page.locator('body').textContent()).not.toContain(exchanged.credential);
+  expect(signedIn.user.displayName).toBe('Pairing UI');
 });
 
 test('complete debate persists and renders a polished verdict', async ({ page, request }) => {

@@ -109,7 +109,7 @@ Then verify in a browser:
 
 1. Sign in with each configured provider.
 2. Create a conflict and inspect the invitation URL.
-3. Join as a second account, bind agents, save both private briefs, and select Ready.
+3. Join as a second account, use **Connect Codex** in each conflict room, save both private briefs, and select Ready.
 4. Submit an Agent API action and confirm the transcript updates without a refresh.
 5. Complete the protocol, confirm the advisory verdict, create a share link, and revoke it.
 6. Confirm a revoked agent token and revoked share link both fail immediately.

@@ -1,5 +1,6 @@
 import type {
   Agent,
+  AgentPairing,
   AgentToken,
   Conflict,
   ConflictEvent,
@@ -69,6 +70,17 @@ const tokenFrom = (r: any): AgentToken => ({
   createdAt: r.created_at,
   lastUsedAt: r.last_used_at,
   revokedAt: r.revoked_at,
+});
+const pairingFrom = (r: any): AgentPairing => ({
+  id: r.id,
+  agentId: r.agent_id,
+  conflictId: r.conflict_id,
+  codeHash: r.code_hash,
+  expiresAt: r.expires_at,
+  claimedAt: r.claimed_at,
+  revokedAt: r.revoked_at,
+  clientName: r.client_name,
+  createdAt: r.created_at,
 });
 const eventFrom = (r: any): ConflictEvent => ({
   id: r.id,
@@ -162,6 +174,11 @@ export class D1Store implements Database {
       this.db
         .prepare(
           'UPDATE agent_tokens SET revoked_at=COALESCE(revoked_at,?) WHERE agent_id IN (SELECT id FROM agents WHERE owner_user_id=?)',
+        )
+        .bind(timestamp, id),
+      this.db
+        .prepare(
+          'UPDATE agent_pairings SET revoked_at=COALESCE(revoked_at,?) WHERE agent_id IN (SELECT id FROM agents WHERE owner_user_id=?)',
         )
         .bind(timestamp, id),
     ]);
@@ -433,6 +450,79 @@ export class D1Store implements Database {
       .prepare('UPDATE agent_tokens SET revoked_at=COALESCE(revoked_at,?) WHERE agent_id=?')
       .bind(new Date().toISOString(), aid)
       .run();
+  }
+  async hasActiveAgentToken(agentId: string) {
+    const count = await this.db
+      .prepare('SELECT COUNT(*) AS count FROM agent_tokens WHERE agent_id=? AND revoked_at IS NULL')
+      .bind(agentId)
+      .first<number>('count');
+    return (count ?? 0) > 0;
+  }
+  async createAgentPairing(pairing: AgentPairing) {
+    await this.db
+      .prepare('INSERT INTO agent_pairings VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')
+      .bind(
+        pairing.id,
+        pairing.agentId,
+        pairing.conflictId,
+        pairing.codeHash,
+        pairing.expiresAt,
+        pairing.claimedAt,
+        pairing.revokedAt,
+        pairing.clientName,
+        null,
+        null,
+        null,
+        pairing.createdAt,
+      )
+      .run();
+    return pairing;
+  }
+  async getAgentPairing(id: string) {
+    const row = await this.db.prepare('SELECT * FROM agent_pairings WHERE id=?').bind(id).first();
+    return row ? pairingFrom(row) : null;
+  }
+  async revokeOpenAgentPairings(agentId: string) {
+    await this.db
+      .prepare(
+        'UPDATE agent_pairings SET revoked_at=? WHERE agent_id=? AND claimed_at IS NULL AND revoked_at IS NULL',
+      )
+      .bind(new Date().toISOString(), agentId)
+      .run();
+  }
+  async claimAgentPairing(codeHash: string, clientName: string, token: AgentToken) {
+    const claimedAt = new Date().toISOString();
+    const results = await this.db.batch([
+      this.db
+        .prepare(
+          "UPDATE agent_pairings SET claimed_at=?,client_name=?,credential_id=?,credential_hash=?,credential_prefix=? WHERE code_hash=? AND claimed_at IS NULL AND revoked_at IS NULL AND expires_at>? AND agent_id IN (SELECT id FROM agents WHERE status='active')",
+        )
+        .bind(
+          claimedAt,
+          clientName,
+          token.id,
+          token.tokenHash,
+          token.tokenPrefix,
+          codeHash,
+          claimedAt,
+        ),
+      this.db
+        .prepare(
+          'INSERT INTO agent_tokens (id,agent_id,token_hash,token_prefix,created_at,last_used_at,revoked_at) SELECT credential_id,agent_id,credential_hash,credential_prefix,?,NULL,NULL FROM agent_pairings WHERE code_hash=? AND credential_id=?',
+        )
+        .bind(token.createdAt, codeHash, token.id),
+      this.db
+        .prepare(
+          'UPDATE agent_pairings SET credential_hash=NULL,credential_prefix=NULL WHERE code_hash=? AND credential_id=?',
+        )
+        .bind(codeHash, token.id),
+    ]);
+    if (results[0].meta.changes !== 1 || results[1].meta.changes !== 1) return null;
+    const row = await this.db
+      .prepare('SELECT * FROM agent_pairings WHERE code_hash=?')
+      .bind(codeHash)
+      .first();
+    return row ? pairingFrom(row) : null;
   }
   async createInvitation(i: Invitation) {
     await this.db

@@ -12,7 +12,7 @@ const SCENE_DURATION = 120;
 const INTRO_DURATION = 105;
 const OUTRO_DURATION = 105;
 const TRANSITION_DURATION = 15;
-const SCREEN_COUNT = 6;
+const SCREEN_COUNT = 7;
 export const WALKTHROUGH_DURATION =
   INTRO_DURATION +
   SCREEN_COUNT * SCENE_DURATION +
@@ -40,26 +40,32 @@ const scenes: Scene[] = [
     body: 'The dashboard groups active, waiting, resolved, cancelled, and expired conflicts around the next useful action.',
   },
   {
+    image: 'resolveroom-codex-pairing.jpg',
+    eyebrow: '03 · CONNECT IN ONE STEP',
+    title: 'Give Codex one short-lived instruction.',
+    body: 'ResolveRoom creates and binds the representative automatically. The code works once and never exposes a long-lived credential in the browser.',
+  },
+  {
     image: 'resolveroom-private-brief.jpg',
-    eyebrow: '03 · BRIEF PRIVATELY',
+    eyebrow: '04 · BRIEF PRIVATELY',
     title: 'Each side briefs only its own agent.',
     body: 'Goals, priorities, compromises, and notes never enter the opponent view or the Judge record.',
   },
   {
     image: 'resolveroom-conflict-room.jpg',
-    eyebrow: '04 · WATCH IT WORK',
+    eyebrow: '05 · WATCH IT WORK',
     title: 'Agents complete a live, finite protocol.',
     body: 'Opening, rebuttal, and closing turns are enforced server-side and persisted as an append-only record.',
   },
   {
     image: 'resolveroom-verdict.jpg',
-    eyebrow: '05 · REACH AN OUTCOME',
+    eyebrow: '06 · REACH AN OUTCOME',
     title: 'The Judge returns a validated advisory verdict.',
     body: 'A structured assessment explains the deciding points, scores both cases, and clearly states its limits.',
   },
   {
     image: 'resolveroom-share-view.jpg',
-    eyebrow: '06 · SHARE SAFELY',
+    eyebrow: '07 · SHARE SAFELY',
     title: 'Publish only a permission-filtered observer view.',
     body: 'Unlisted links are read-only and revocable. Private briefs, credentials, and private events stay out.',
   },
@@ -149,7 +155,7 @@ const Intro = () => {
         <div
           style={{ marginTop: 40, fontSize: 30, color: MUTED, maxWidth: 1060, lineHeight: 1.45 }}
         >
-          A 28-second tour of the complete ResolveRoom workflow.
+          A 31-second tour of the complete ResolveRoom workflow.
         </div>
       </div>
       <div

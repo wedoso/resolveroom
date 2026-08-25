@@ -12,6 +12,7 @@ import {
   createContext,
   useContext,
   useEffect,
+  useId,
   useRef,
   useState,
   type FormEvent,
@@ -186,6 +187,8 @@ export function Dialog({
   onClose: () => void;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
+  const titleId = useId();
+  const descriptionId = useId();
   useEffect(() => {
     const dialog = ref.current;
     if (open && !dialog?.open) dialog?.showModal();
@@ -195,6 +198,8 @@ export function Dialog({
     <dialog
       ref={ref}
       className="dialog"
+      aria-labelledby={titleId}
+      aria-describedby={description ? descriptionId : undefined}
       onCancel={onClose}
       onClick={(event) => {
         if (event.target === ref.current) onClose();
@@ -204,8 +209,12 @@ export function Dialog({
         <button className="icon-button dialog-close" aria-label="Close dialog" onClick={onClose}>
           <X />
         </button>
-        <h2>{title}</h2>
-        {description && <p className="muted">{description}</p>}
+        <h2 id={titleId}>{title}</h2>
+        {description && (
+          <p className="muted" id={descriptionId}>
+            {description}
+          </p>
+        )}
         <div className="dialog-body">{children}</div>
       </div>
     </dialog>

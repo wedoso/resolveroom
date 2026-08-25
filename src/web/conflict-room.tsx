@@ -457,6 +457,9 @@ function AgentCard({
   load: () => Promise<void>;
 }) {
   const [busy, setBusy] = useState(false);
+  const [pairing, setPairing] = useState<any>(null);
+  const [pairingError, setPairingError] = useState('');
+  const [copied, setCopied] = useState(false);
   const bind = async (agentId: string) => {
     setBusy(true);
     await api(`/conflicts/${id}/agent`, {
@@ -466,6 +469,38 @@ function AgentCard({
     await load();
     setBusy(false);
   };
+  const startPairing = async () => {
+    setBusy(true);
+    setPairingError('');
+    setCopied(false);
+    try {
+      const value = await api<any>(`/conflicts/${id}/agent/pairings`, {
+        method: 'POST',
+        body: '{}',
+      });
+      setPairing(value);
+      await load();
+    } catch (error) {
+      setPairingError(error instanceof Error ? error.message : 'Could not create a pairing code.');
+    } finally {
+      setBusy(false);
+    }
+  };
+  useEffect(() => {
+    const pairingId = pairing?.pairing?.id;
+    if (!pairingId || pairing.pairing.status !== 'waiting') return;
+    const refresh = async () => {
+      try {
+        const value = await api<any>(`/agent-pairings/${pairingId}`);
+        setPairing((current: any) => (current ? { ...current, pairing: value.pairing } : current));
+        if (value.pairing.status === 'connected') await load();
+      } catch {
+        // The next poll can recover a transient network failure.
+      }
+    };
+    const interval = window.setInterval(() => void refresh(), 2000);
+    return () => window.clearInterval(interval);
+  }, [pairing?.pairing?.id, pairing?.pairing?.status, load]);
   const ready = async () => {
     setBusy(true);
     await api(`/conflicts/${id}/ready`, { method: 'POST', body: '{"ready":true}' });
@@ -475,19 +510,19 @@ function AgentCard({
   return (
     <section className="rail-section">
       <div className="rail-label">
-        YOUR REPRESENTATIVE <span>{party.agent_bound ? 'CONNECTED' : 'ACTION NEEDED'}</span>
+        YOUR REPRESENTATIVE <span>{party.agent_connected ? 'CONNECTED' : 'ACTION NEEDED'}</span>
       </div>
       <div className="agent-rail-card">
         <Bot />
         <div>
-          <strong>{party.agent_bound ? 'Agent connected' : 'Connect an agent'}</strong>
+          <strong>{party.agent_connected ? 'Codex connected' : 'Connect Codex'}</strong>
           <p>
-            {party.agent_bound
-              ? 'The credential can discover and act on this conflict.'
-              : 'Choose one of your authorized external agents.'}
+            {party.agent_connected
+              ? 'Your agent can securely discover and act on this conflict.'
+              : 'Send one short-lived pairing instruction to your Codex. No API key setup required.'}
           </p>
         </div>
-        {party.agent_bound ? (
+        {party.agent_connected ? (
           <button
             className="button secondary wide"
             disabled={party.ready || busy}
@@ -504,30 +539,124 @@ function AgentCard({
               'I’m ready'
             )}
           </button>
-        ) : agents.length ? (
-          <select
-            aria-label="Select agent"
-            disabled={busy}
-            defaultValue=""
-            onChange={(e) => void bind(e.target.value)}
-          >
-            <option value="" disabled>
-              Select agent…
-            </option>
-            {agents
-              .filter((a) => a.status === 'active')
-              .map((a) => (
-                <option key={a.id} value={a.id}>
-                  {a.name}
-                </option>
-              ))}
-          </select>
         ) : (
-          <Link className="button secondary wide" to="/agents">
-            Create an agent
-          </Link>
+          <>
+            <button className="button wide" disabled={busy} onClick={() => void startPairing()}>
+              {busy ? <LoaderCircle className="spin" /> : <Link2 />}
+              {party.agent_bound ? 'Pair Codex' : 'Connect Codex'}
+            </button>
+            {pairingError && (
+              <p className="form-error" role="alert">
+                {pairingError}
+              </p>
+            )}
+            {agents.some((agent) => agent.status === 'active') && !party.agent_bound && (
+              <details className="existing-agent-options">
+                <summary>Use an existing agent</summary>
+                <select
+                  aria-label="Select an existing agent"
+                  disabled={busy}
+                  defaultValue=""
+                  onChange={(event) => void bind(event.target.value)}
+                >
+                  <option value="" disabled>
+                    Select agent…
+                  </option>
+                  {agents
+                    .filter((agent) => agent.status === 'active')
+                    .map((agent) => (
+                      <option key={agent.id} value={agent.id}>
+                        {agent.name}
+                      </option>
+                    ))}
+                </select>
+              </details>
+            )}
+            <Link className="agent-developer-link" to="/agents">
+              Developer options →
+            </Link>
+          </>
         )}
       </div>
+      <Dialog
+        open={Boolean(pairing)}
+        onClose={() => setPairing(null)}
+        title={pairing?.pairing?.status === 'connected' ? 'Codex connected' : 'Pair with Codex'}
+        description={
+          pairing?.pairing?.status === 'connected'
+            ? 'This representative is ready to receive authorized ResolveRoom tasks.'
+            : 'Copy one instruction into a Codex task. The pairing code is short-lived and single-use.'
+        }
+      >
+        {pairing && (
+          <div className="pairing-flow" aria-live="polite">
+            <ol className="pairing-progress" aria-label="Pairing progress">
+              <li className="done">1 · Code</li>
+              <li className={pairing.pairing.status === 'waiting' ? 'current' : 'done'}>
+                2 · Send
+              </li>
+              <li className={pairing.pairing.status === 'connected' ? 'done' : ''}>
+                3 · Connected
+              </li>
+            </ol>
+            {pairing.pairing.status === 'connected' ? (
+              <div className="pairing-success">
+                <span>
+                  <Check />
+                </span>
+                <h3>Secure connection established</h3>
+                <p>
+                  {pairing.pairing.client_name ?? 'Codex'} connected{' '}
+                  {pairing.pairing.claimed_at
+                    ? new Date(pairing.pairing.claimed_at).toLocaleTimeString()
+                    : 'just now'}
+                  .
+                </p>
+                <button className="button wide" onClick={() => setPairing(null)}>
+                  Continue briefing
+                </button>
+              </div>
+            ) : pairing.pairing.status === 'waiting' ? (
+              <>
+                <div className="pairing-code">
+                  <small>ONE-TIME PAIRING CODE</small>
+                  <strong>{pairing.code}</strong>
+                  <span>Expires {new Date(pairing.pairing.expires_at).toLocaleTimeString()}</span>
+                </div>
+                <button
+                  className="button large wide"
+                  onClick={async () => {
+                    await navigator.clipboard.writeText(pairing.instruction);
+                    setCopied(true);
+                  }}
+                >
+                  {copied ? <Check /> : <Copy />}
+                  {copied ? 'Instruction copied' : 'Copy instruction for Codex'}
+                </button>
+                <div className="pairing-safety">
+                  <ShieldCheck />
+                  <p>
+                    This code contains no long-lived credential. It works once, expires in ten
+                    minutes, and can only connect your authorized Agent.
+                  </p>
+                </div>
+                <p className="pairing-waiting">
+                  <LoaderCircle className="spin" /> Waiting for Codex to connect…
+                </p>
+              </>
+            ) : (
+              <div className="pairing-expired">
+                <AlertTriangle />
+                <h3>This pairing code is no longer available</h3>
+                <p>Generate a fresh single-use instruction and send that one to Codex.</p>
+                <button className="button wide" onClick={() => void startPairing()}>
+                  <RefreshCw /> Generate new code
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+      </Dialog>
     </section>
   );
 }

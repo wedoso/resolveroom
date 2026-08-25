@@ -668,17 +668,12 @@ export function AgentsPage() {
   const create = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
-    const value = await api<any>('/agents', {
+    await api<any>('/agents', {
       method: 'POST',
       body: JSON.stringify({ name: form.get('name') }),
     });
     setCreateOpen(false);
-    const credential = await api<any>(`/agents/${value.agent.id}/tokens`, {
-      method: 'POST',
-      body: '{}',
-    });
-    setToken(credential.token);
-    load();
+    await load();
   };
   if (!agents && !error)
     return (
@@ -693,7 +688,7 @@ export function AgentsPage() {
           <div>
             <span className="eyebrow">EXTERNAL REPRESENTATIVES</span>
             <h1>Your agents</h1>
-            <p>Create an identity for any external agent, then issue a revocable API credential.</p>
+            <p>Manage representative identities, connections, and developer credentials.</p>
           </div>
           <button className="button" onClick={() => setCreateOpen(true)}>
             <Plus />
@@ -703,10 +698,10 @@ export function AgentsPage() {
         <div className="integration-note">
           <Code2 />
           <div>
-            <strong>Bring your own agent</strong>
+            <strong>Connect from a conflict</strong>
             <p>
-              Any model or framework can use the Parley REST API. ResolveRoom never needs access to
-              the agent’s underlying provider account.
+              Most people can connect Codex with one short-lived instruction inside the conflict
+              room. The API contract remains available for custom agent runtimes.
             </p>
           </div>
           <a href="/openapi.json">
@@ -720,7 +715,8 @@ export function AgentsPage() {
         ) : agents?.length === 0 ? (
           <StatePanel title="No agents authorized">
             <p>
-              Create one agent identity, then store its one-time credential in your agent runtime.
+              Agent identities are created automatically when you connect Codex from a conflict, or
+              you can create one here for a custom runtime.
             </p>
             <button className="button" onClick={() => setCreateOpen(true)}>
               Create your first agent
@@ -741,7 +737,8 @@ export function AgentsPage() {
                   <h2>{agent.name}</h2>
                   <p>Created {relativeTime(agent.createdAt)}</p>
                 </div>
-                <div className="agent-actions">
+                <details className="agent-actions developer-options">
+                  <summary>Developer options</summary>
                   <button
                     className="button secondary"
                     onClick={async () => {
@@ -753,9 +750,9 @@ export function AgentsPage() {
                     }}
                   >
                     <KeyRound />
-                    Rotate credential
+                    Issue / rotate API credential
                   </button>
-                </div>
+                </details>
               </article>
             ))}
           </div>
@@ -777,14 +774,14 @@ export function AgentsPage() {
                 autoFocus
               />
             </label>
-            <button className="button wide">Create and issue credential</button>
+            <button className="button wide">Create agent identity</button>
           </form>
         </Dialog>
         <Dialog
           open={Boolean(token)}
           onClose={() => setToken(null)}
-          title="Store this credential now"
-          description="For security, ResolveRoom will never show the raw token again."
+          title="Developer credential"
+          description="This advanced option is for custom API runtimes. ResolveRoom will never show the raw token again."
         >
           {token && (
             <div className="token-reveal">

@@ -3,6 +3,13 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "bin": {
+    "resolveroom": "scripts/resolveroom-agent.mjs"
+  },
+  "files": [
+    "scripts/resolveroom-agent.mjs",
+    "README.md"
+  ],
   "engines": {
     "node": ">=22"
   },
@@ -24,7 +31,7 @@
     "db:migrate:remote": "npm run deploy:config && wrangler d1 migrations apply resolveroom --remote --config wrangler.deploy.toml",
     "seed": "tsx scripts/seed.ts",
     "demo": "tsx scripts/demo.ts",
-    "agent": "tsx scripts/resolveroom-agent.ts",
+    "agent": "node scripts/resolveroom-agent.mjs",
     "agent:configure": "bash scripts/configure-resolveroom-agent.sh",
     "video:preview": "remotion studio media/remotion/index.tsx --public-dir=docs/assets",
     "video:render": "remotion render media/remotion/index.tsx ResolveRoomWalkthrough docs/assets/resolveroom-walkthrough.mp4 --public-dir=docs/assets --codec=h264 --crf=18",

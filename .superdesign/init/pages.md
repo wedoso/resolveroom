@@ -2,10 +2,11 @@
 
 ## `/agents`
 
-- `src/web/pages.tsx` (`AgentsPage`, lines 656–809)
+- `src/web/pages.tsx` (`AgentsPage`, lines 656–812)
   - `src/web/components.tsx` (`AppShell`, `PageLoading`, `StatePanel`, `StatusBadge`, `Dialog`)
   - `src/web/api.ts`
   - `src/web/styles.css`
+  - Secondary management surface: conflict-first Codex pairing is the primary user flow; raw API credentials live inside a developer-options disclosure.
 
 ## `/dashboard`
 
@@ -20,6 +21,7 @@
   - `src/web/components.tsx`
   - `src/web/api.ts`
   - `src/web/styles.css`
+  - `AgentCard` auto-creates/binds a representative and presents a short-lived, single-use Codex pairing instruction with waiting, success, expired, and retry states.
 
 ## `/`, `/signin`, `/conflicts/new`, `/join/:token`, `/notifications`, `/share/:token`
 

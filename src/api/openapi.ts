@@ -93,6 +93,20 @@ export const openapiDocument = {
           metadata: { type: 'object', additionalProperties: true },
         },
       },
+      AgentPairing: {
+        type: 'object',
+        required: ['id', 'agent_id', 'status', 'expires_at', 'created_at'],
+        properties: {
+          id: { type: 'string', example: 'prg_...' },
+          agent_id: { type: 'string', example: 'agt_...' },
+          conflict_id: { type: ['string', 'null'], example: 'con_...' },
+          status: { type: 'string', enum: ['waiting', 'connected', 'expired', 'revoked'] },
+          expires_at: { type: 'string', format: 'date-time' },
+          claimed_at: { type: ['string', 'null'], format: 'date-time' },
+          client_name: { type: ['string', 'null'] },
+          created_at: { type: 'string', format: 'date-time' },
+        },
+      },
     },
     responses: {
       Error: {
@@ -400,6 +414,49 @@ export const openapiDocument = {
         summary: 'Revoke one credential',
         security: humanSession,
         responses: noContent,
+      },
+    },
+    '/conflicts/{id}/agent/pairings': {
+      post: {
+        tags: ['Agents'],
+        summary: 'Create or bind an Agent and issue a short-lived single-use pairing code',
+        description:
+          'The raw pairing code is returned once to the signed-in participant. It is not an Agent credential and expires after ten minutes.',
+        parameters: conflictId,
+        security: humanSession,
+        responses: { '201': { description: 'Pairing instruction created' } },
+      },
+    },
+    '/agent-pairings/exchange': {
+      post: {
+        tags: ['Agent runtime'],
+        summary: 'Exchange one short-lived pairing code for an Agent credential',
+        description:
+          'No prior authentication is required. A code can be redeemed once; the resulting credential is returned once and should be stored without printing it.',
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['code', 'client_name'],
+                properties: {
+                  code: { type: 'string', pattern: '^[A-Z2-9]{4}(?:-[A-Z2-9]{4}){2}$' },
+                  client_name: { type: 'string', minLength: 2, maxLength: 120 },
+                },
+              },
+            },
+          },
+        },
+        responses: { '200': { description: 'Credential returned once' } },
+      },
+    },
+    '/agent-pairings/{id}': {
+      get: {
+        tags: ['Agents'],
+        summary: 'Poll an owned pairing without exposing its code or credential',
+        security: humanSession,
+        responses: ok,
       },
     },
     '/conflicts/{id}/share-links': {

@@ -1,5 +1,6 @@
 import type {
   Agent,
+  AgentPairing,
   AgentToken,
   Conflict,
   ConflictEvent,
@@ -56,6 +57,15 @@ export interface Database {
   findAgentToken(tokenHash: string): Promise<AgentToken | null>;
   revokeAgentToken(tokenId: string, ownerUserId: string): Promise<boolean>;
   revokeAllAgentTokens(agentId: string): Promise<void>;
+  hasActiveAgentToken(agentId: string): Promise<boolean>;
+  createAgentPairing(pairing: AgentPairing): Promise<AgentPairing>;
+  getAgentPairing(id: string): Promise<AgentPairing | null>;
+  revokeOpenAgentPairings(agentId: string): Promise<void>;
+  claimAgentPairing(
+    codeHash: string,
+    clientName: string,
+    token: AgentToken,
+  ): Promise<AgentPairing | null>;
 
   createInvitation(invitation: Invitation): Promise<Invitation>;
   findInvitation(tokenHash: string): Promise<Invitation | null>;

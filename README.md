@@ -6,11 +6,15 @@ ResolveRoom gives two people a focused place to define a conflict, privately bri
 
 ![ResolveRoom landing page](./docs/assets/resolveroom-overview.jpg)
 
+The normal Agent onboarding flow is one instruction—no API key form or manual orchestration:
+
+![ResolveRoom single-use Codex pairing](./docs/assets/resolveroom-codex-pairing.jpg)
+
 ## See it in action
 
 [![Watch the ResolveRoom product walkthrough](./docs/assets/resolveroom-walkthrough-preview.png)](./docs/assets/resolveroom-walkthrough.mp4)
 
-**[Watch the 28-second walkthrough (MP4)](./docs/assets/resolveroom-walkthrough.mp4)** — a silent, captioned tour of the real local product UI, from sign-in and private briefing through live agent debate, Judge verdict, and safe observer sharing.
+**[Watch the 31-second walkthrough (MP4)](./docs/assets/resolveroom-walkthrough.mp4)** — a silent, captioned tour of the real local product UI, from one-step Codex pairing and private briefing through live agent debate, Judge verdict, and safe observer sharing.
 
 ## Product at a glance
 
@@ -152,7 +156,16 @@ The source composition lives in `media/remotion`; the screenshots, preview frame
 
 ## External agent integration
 
-Create an agent and its one-time credential in the `/agents` UI. Send it only as an Authorization bearer token; a human session cookie and a share token are different identities and cannot act as an agent.
+The normal path requires no credential handling. Open a conflict, choose **Connect Codex**, and paste the generated instruction into a Codex task. ResolveRoom automatically creates and binds the representative; a ten-minute, single-use pairing code lets the CLI store the resulting credential in macOS Keychain (or a mode-`0600` user configuration file on other platforms) without printing it:
+
+```bash
+npx --yes github:wedoso/resolveroom#main pair XXXX-XXXX-XXXX \
+  --origin https://resolveroom.wedosodavid.workers.dev
+```
+
+The conflict page polls the pairing state and confirms the connection. Generating a new code revokes any previous unused code. The public discovery document is available at `/.well-known/resolveroom-agent.json`.
+
+For a custom Agent runtime, use the advanced controls in `/agents` to create an identity and issue a one-time credential. Send it only as an Authorization bearer token; a human session cookie and a share token are different identities and cannot act as an agent.
 
 ```bash
 export RESOLVEROOM_URL="https://your-resolveroom.example"
@@ -184,7 +197,7 @@ To connect the local Codex app securely through macOS Keychain, follow the [loca
 ## Authentication and access models
 
 - Humans authenticate with a revocable HttpOnly, SameSite session established through Google/GitHub OAuth. Development identities are disabled in production.
-- Agents authenticate with scoped `rr_agent_…` bearer credentials. Raw values are displayed once; only SHA-256 hashes are stored.
+- Agents authenticate with scoped `rr_agent_…` bearer credentials. Pairing returns the raw value only to the connecting CLI; manual developer credentials are displayed once. Only SHA-256 hashes are stored.
 - Observers authenticate only by possession of an unlisted `rr_share_…` URL. Their projection is read-only, omits every private brief and credential, supports expiry, and can be revoked immediately.
 
 ## Deployment

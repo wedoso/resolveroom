@@ -217,7 +217,7 @@ export default {
       }
     }
     const coordinated = url.pathname.match(
-      /^\/api\/v1\/conflicts\/([^/]+)\/(ready|pause|resume|cancel|concede|actions|judge|stream|agent|brief|invite)$/,
+      /^\/api\/v1\/conflicts\/([^/]+)\/(ready|pause|resume|cancel|concede|actions|judge|stream|agent(?:\/pairings)?|brief|invite)$/,
     );
     if (coordinated) {
       const id = env.CONFLICT_ROOMS.idFromName(coordinated[1]);
@@ -226,6 +226,7 @@ export default {
     if (
       url.pathname.startsWith('/api/') ||
       url.pathname === '/openapi.json' ||
+      url.pathname === '/.well-known/resolveroom-agent.json' ||
       url.pathname === '/health'
     ) {
       return createApi(new D1Store(env.DB), apiOptions(env)).fetch(request, env as any, ctx);

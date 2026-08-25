@@ -88,6 +88,17 @@ export interface AgentToken {
   lastUsedAt: string | null;
   revokedAt: string | null;
 }
+export interface AgentPairing {
+  id: string;
+  agentId: string;
+  conflictId: string | null;
+  codeHash: string;
+  expiresAt: string;
+  claimedAt: string | null;
+  revokedAt: string | null;
+  clientName: string | null;
+  createdAt: string;
+}
 export interface Conflict {
   id: string;
   title: string;
