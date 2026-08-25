@@ -523,22 +523,31 @@ function AgentCard({
           </p>
         </div>
         {party.agent_connected ? (
-          <button
-            className="button secondary wide"
-            disabled={party.ready || busy}
-            onClick={() => void ready()}
-          >
-            {party.ready ? (
-              <>
-                <Check />
-                Ready
-              </>
-            ) : busy ? (
-              'Saving…'
-            ) : (
-              'I’m ready'
-            )}
-          </button>
+          <>
+            <button
+              className="button secondary wide"
+              disabled={party.ready || busy}
+              onClick={() => void ready()}
+            >
+              {party.ready ? (
+                <>
+                  <Check />
+                  Ready
+                </>
+              ) : busy ? (
+                'Saving…'
+              ) : (
+                'I’m ready'
+              )}
+            </button>
+            <button
+              className="agent-developer-link"
+              disabled={busy}
+              onClick={() => void startPairing()}
+            >
+              Reconnect Codex →
+            </button>
+          </>
         ) : (
           <>
             <button className="button wide" disabled={busy} onClick={() => void startPairing()}>

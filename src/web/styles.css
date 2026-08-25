@@ -1771,6 +1771,9 @@ legend {
 .agent-developer-link {
   display: inline-block;
   margin-top: 13px;
+  padding: 0;
+  border: 0;
+  background: transparent;
 }
 .pairing-flow {
   display: flex;

@@ -242,6 +242,8 @@ test('a participant pairs Codex from the conflict with one short-lived instructi
   await expect(page.getByText('Secure connection established')).toBeVisible({ timeout: 10_000 });
   await expect(page.getByText(/Codex browser E2E connected/)).toBeVisible();
   expect(await page.locator('body').textContent()).not.toContain(exchanged.credential);
+  await page.getByRole('button', { name: 'Continue briefing' }).click();
+  await expect(page.getByRole('button', { name: 'Reconnect Codex' })).toBeVisible();
   expect(signedIn.user.displayName).toBe('Pairing UI');
 });
 

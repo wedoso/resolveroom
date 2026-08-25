@@ -26,8 +26,8 @@
         ".superdesign/init/theme.md": "7879434ef33dd84b5816af690d96c6a0c1419b267fbbced661379757410b6cd9",
         "src/web/components.tsx": "c6f1f2717eb3e579c988c961ebc87463df31485bca2e4664ced5ed62810a8f27",
         "src/web/pages.tsx": "fec4f64a3a96650d61eef87dd115602baac6bff36ef822ef8445eeed5382e70",
-        "src/web/conflict-room.tsx": "3698979d6c8f7a4589168eeb22f4a5c2159d11ce83066c7d1bbbe0ae9e7d85e2",
-        "src/web/styles.css": "ca22e82f247e9fd98a2efa5dc84fdba9e7b28e8fe35748a7a0c095379a4decf7"
+        "src/web/conflict-room.tsx": "1877563fe5072cc55f561c69c7aa9a07952ac6bd946f9470a278692c18fe99e0",
+        "src/web/styles.css": "9d7578c6c8abda55be1d5dfc4172cba8a9ce635b8d73e854fad2d21017450690"
       },
       "components": [
         {
@@ -43,7 +43,7 @@
           "currentVersion": 2
         }
       },
-      "updatedAt": "2026-08-25T07:01:40Z"
+      "updatedAt": "2026-08-25T07:16:21Z"
     }
   }
 }
