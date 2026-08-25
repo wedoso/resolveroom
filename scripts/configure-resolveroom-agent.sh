@@ -10,8 +10,7 @@ fi
 default_origin="https://resolveroom.wedosodavid.workers.dev"
 keychain_service="ResolveRoom Agent Credential"
 
-read -r -p "ResolveRoom URL [${default_origin}]: " entered_origin
-origin="${entered_origin:-${default_origin}}"
+origin="${RESOLVEROOM_URL:-${default_origin}}"
 origin="${origin%/}"
 
 if [[ ! "${origin}" =~ ^https://[^/]+$ ]]; then
@@ -19,6 +18,7 @@ if [[ ! "${origin}" =~ ^https://[^/]+$ ]]; then
   exit 1
 fi
 
+echo "Connecting to ${origin}"
 read -r -s -p "Paste the one-time rr_agent_ credential (input is hidden): " token
 echo
 
