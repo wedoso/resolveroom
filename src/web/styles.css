@@ -1262,6 +1262,81 @@ legend {
   color: var(--ink-3);
   margin: 0;
 }
+.runner-summary {
+  margin-top: 16px;
+  max-width: 620px;
+  border: 1px solid var(--line);
+  background: var(--white);
+  padding: 14px 16px;
+  border-left: 3px solid var(--danger);
+}
+.runner-summary.online,
+.runner-summary.working {
+  border-left-color: var(--success);
+  background: rgba(207, 225, 212, 0.18);
+}
+.runner-summary.reconnecting {
+  border-left-color: var(--warning);
+  background: rgba(246, 237, 204, 0.28);
+}
+.runner-summary-heading {
+  display: grid;
+  grid-template-columns: 24px 1fr;
+  gap: 10px;
+  align-items: start;
+}
+.runner-summary-heading > span:last-child {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.runner-summary-heading strong {
+  font-size: 13px;
+}
+.runner-summary-heading small {
+  color: var(--ink-3);
+  line-height: 1.45;
+}
+.runner-state-icon {
+  color: var(--danger);
+}
+.runner-state-icon svg {
+  width: 18px;
+  height: 18px;
+}
+.runner-summary.online .runner-state-icon,
+.runner-summary.working .runner-state-icon {
+  color: var(--success);
+}
+.runner-summary.reconnecting .runner-state-icon {
+  color: var(--warning);
+}
+.runner-facts {
+  display: flex;
+  gap: 28px;
+  margin: 12px 0 0 34px;
+}
+.runner-facts div {
+  display: flex;
+  gap: 6px;
+  font-family: 'JetBrains Mono';
+  font-size: 9px;
+}
+.runner-facts dt {
+  color: var(--ink-3);
+}
+.runner-facts dd {
+  margin: 0;
+  color: var(--ink-2);
+}
+.runner-recovery {
+  margin: 12px 0 0 34px !important;
+  line-height: 1.5;
+}
+.runner-recovery a {
+  color: var(--forest);
+  font-weight: 650;
+}
 .developer-options {
   min-width: 225px;
   text-align: right;
@@ -1746,6 +1821,12 @@ legend {
 .rail-label span {
   color: var(--success);
 }
+.rail-label .runner-label.reconnecting {
+  color: var(--warning);
+}
+.rail-label .runner-label.reconnect_required {
+  color: var(--danger);
+}
 .turn-card,
 .agent-rail-card,
 .rail-paper {
@@ -1799,6 +1880,16 @@ legend {
 .agent-rail-card > svg {
   color: var(--forest);
   margin-bottom: 10px;
+}
+.agent-rail-card.runner-online,
+.agent-rail-card.runner-working {
+  border-left: 3px solid var(--success);
+}
+.agent-rail-card.runner-reconnecting {
+  border-left: 3px solid var(--warning);
+}
+.agent-rail-card.runner-reconnect_required {
+  border-left: 3px solid var(--danger);
 }
 .agent-rail-card .button,
 .agent-rail-card select {
@@ -1919,6 +2010,10 @@ legend {
   align-items: center;
   justify-content: center;
   color: var(--success);
+}
+.pairing-success.pending > span {
+  background: var(--muted);
+  color: var(--forest);
 }
 .pairing-success h3,
 .pairing-expired h3 {

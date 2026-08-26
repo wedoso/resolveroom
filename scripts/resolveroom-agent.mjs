@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir, hostname } from 'node:os';
 import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import process from 'node:process';
 
 const defaultUrl = 'https://resolveroom.wedosodavid.workers.dev';
@@ -20,7 +21,10 @@ if (originIndex >= 0) {
   rawArguments.splice(originIndex, 2);
 }
 const baseUrl = configuredUrl.replace(/\/$/, '');
-if (!/^https:\/\/[^/]+$/.test(baseUrl) && !/^http:\/\/localhost(?::\d+)?$/.test(baseUrl))
+if (
+  !/^https:\/\/[^/]+$/.test(baseUrl) &&
+  !/^http:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/.test(baseUrl)
+)
   throw new Error('ResolveRoom origin must be HTTPS (or localhost for development).');
 
 function credentialFile() {
@@ -140,37 +144,66 @@ function usage() {
   console.log(`ResolveRoom agent CLI
 
 Usage:
+  resolveroom connect <pairing-code> [--origin https://resolveroom.example]
   resolveroom pair <pairing-code> [--origin https://resolveroom.example]
+  resolveroom runner <start|status|install|reconnect>
   resolveroom tasks
   resolveroom wait [timeout-seconds]
   resolveroom context <conflict-id>
   printf '%s' '<response>' | resolveroom act <conflict-id> <action> [request-id]
 
-Pairing stores the credential without printing it. The act command reads content from stdin.`);
+Connect stores the credential, installs an always-on local Runner, and verifies it is online.
+Pair stores only the credential for custom/manual workflows. The act command reads content from stdin.`);
+}
+
+async function exchangePairing(code) {
+  if (!code) throw new Error('pairing requires the one-time pairing code.');
+  const result = await request(
+    '/agent-pairings/exchange',
+    {
+      method: 'POST',
+      body: JSON.stringify({ code, client_name: `ResolveRoom Runner on ${hostname()}` }),
+    },
+    false,
+  );
+  if (!result?.credential?.startsWith('rr_agent_'))
+    throw new Error('ResolveRoom did not return a valid Agent credential.');
+  const storedIn = storeCredential(result.credential);
+  const assignment = await waitForAssignedTask(result.conflict_id);
+  if (!assignment.task)
+    throw new Error(
+      'The credential was stored securely, but ResolveRoom did not confirm the conflict assignment. Generate a fresh pairing instruction from the conflict room and reconnect.',
+    );
+  return { result, storedIn };
 }
 
 const [command, ...args] = rawArguments;
 
 switch (command) {
+  case 'connect': {
+    const { result, storedIn } = await exchangePairing(args[0]);
+    const { installRunner, waitUntilOnline } = await import('./resolveroom-runner.mjs');
+    const installed = installRunner({
+      baseUrl,
+      mainScript: fileURLToPath(import.meta.url),
+      runnerScript: fileURLToPath(new URL('./resolveroom-runner.mjs', import.meta.url)),
+    });
+    const runner = await waitUntilOnline((path, init) => request(path, init));
+    print({
+      connected: true,
+      runner_online: true,
+      origin: baseUrl,
+      agent: result.agent,
+      conflict_id: result.conflict_id,
+      credential_stored_in: storedIn,
+      service: installed.service,
+      runner,
+      next: 'ResolveRoom will now push authorized turns to this Runner automatically.',
+    });
+    break;
+  }
   case 'pair': {
-    const [code] = args;
-    if (!code) throw new Error('pair requires the one-time pairing code.');
-    const result = await request(
-      '/agent-pairings/exchange',
-      {
-        method: 'POST',
-        body: JSON.stringify({ code, client_name: `Codex on ${hostname()}` }),
-      },
-      false,
-    );
-    if (!result?.credential?.startsWith('rr_agent_'))
-      throw new Error('ResolveRoom did not return a valid Agent credential.');
-    const storedIn = storeCredential(result.credential);
-    const assignment = await waitForAssignedTask(result.conflict_id);
-    if (!assignment.task)
-      throw new Error(
-        'The credential was stored securely, but ResolveRoom did not confirm the conflict assignment. Generate a fresh pairing instruction from the conflict room and reconnect.',
-      );
+    const { result, storedIn } = await exchangePairing(args[0]);
     print({
       connected: true,
       task_assigned: true,
@@ -180,6 +213,18 @@ switch (command) {
       credential_stored_in: storedIn,
       next: 'Run resolveroom tasks and act only when your_turn is true.',
     });
+    break;
+  }
+  case 'runner': {
+    const { runRunnerCommand } = await import('./resolveroom-runner.mjs');
+    const value = await runRunnerCommand({
+      args,
+      baseUrl,
+      token: agentToken(),
+      request: (path, init) => request(path, init),
+      mainScript: fileURLToPath(import.meta.url),
+    });
+    if (value) print(value);
     break;
   }
   case 'tasks': {

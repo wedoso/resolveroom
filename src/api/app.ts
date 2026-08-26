@@ -44,7 +44,35 @@ type Options = {
   secureCookies?: boolean;
   oauth?: Partial<Record<OAuthProviderName, OAuthCredentials>>;
   emailProvider?: EmailProvider;
+  runnerStatus?: (agentId: string) => Promise<RunnerStatus>;
+  disconnectRunner?: (agentId: string, reason: string) => Promise<void>;
 };
+export type RunnerStatus = {
+  state: 'online' | 'working' | 'reconnecting' | 'reconnect_required';
+  online: boolean;
+  needs_reconnect: boolean;
+  connected_at: string | null;
+  last_seen_at: string | null;
+  device_name: string | null;
+  runner_version: string | null;
+  provider: string | null;
+  pending_tasks: number;
+  active_conflict_id: string | null;
+  reconnect_reason: string | null;
+};
+const disconnectedRunnerStatus = (): RunnerStatus => ({
+  state: 'reconnect_required',
+  online: false,
+  needs_reconnect: true,
+  connected_at: null,
+  last_seen_at: null,
+  device_name: null,
+  runner_version: null,
+  provider: null,
+  pending_tasks: 0,
+  active_conflict_id: null,
+  reconnect_reason: 'runner_not_connected',
+});
 const limiter = new Map<string, { count: number; reset: number }>();
 
 const jsonBody = async (c: Context) => {
@@ -86,6 +114,7 @@ export function createApi(db: Database, options: Options = {}) {
   );
   const judgeEnabled = options.judgeEnabled ?? true;
   const judgeMode = judgeEnabled ? (options.judgeMode ?? 'mock') : 'disabled';
+  const runnerStatus = options.runnerStatus ?? (async () => disconnectedRunnerStatus());
   app.use('*', secureHeaders());
   const allowedOrigin = new URL(options.appUrl ?? 'http://localhost:5173').origin;
   app.use(
@@ -213,10 +242,12 @@ export function createApi(db: Database, options: Options = {}) {
       },
       cli: {
         command: 'npx --yes github:wedoso/resolveroom#main',
+        connect: `npx --yes github:wedoso/resolveroom#main connect <PAIRING_CODE> --origin ${allowedOrigin}`,
         pair: `npx --yes github:wedoso/resolveroom#main pair <PAIRING_CODE> --origin ${allowedOrigin}`,
       },
       runtime: {
         tasks: `${allowedOrigin}/api/v1/agent/tasks`,
+        websocket: `${allowedOrigin.replace(/^http/, 'ws')}/api/v1/agent-runner/connect`,
         openapi: `${allowedOrigin}/openapi.json`,
       },
       security: {
@@ -394,7 +425,8 @@ export function createApi(db: Database, options: Options = {}) {
           role: p.role,
           display_name: p.displayName,
           agent_bound: Boolean(p.agentId),
-          agent_connected: p.agentId ? await db.hasActiveAgentToken(p.agentId) : false,
+          agent_connected: p.agentId ? (await runnerStatus(p.agentId)).online : false,
+          runner: p.agentId ? await runnerStatus(p.agentId) : null,
           ...(p.id === party.id && p.agentId ? { agent_id: p.agentId } : {}),
           ready: p.ready,
           joined: Boolean(p.userId),
@@ -477,7 +509,8 @@ export function createApi(db: Database, options: Options = {}) {
   });
   app.post('/api/v1/conflicts/:id/ready', async (c) => {
     const body = await jsonBody(c);
-    const result = await conflicts.setReady(c.req.param('id'), human(c).id, body.ready !== false);
+    const user = human(c);
+    const result = await conflicts.setReady(c.req.param('id'), user.id, body.ready !== false);
     if (judgeEnabled && result.started) await runJudgeIfNeeded(db, judge, c.req.param('id'));
     return c.json(result);
   });
@@ -524,13 +557,20 @@ export function createApi(db: Database, options: Options = {}) {
     return c.json({
       agents: await Promise.all(
         agents.map(async (agent) => {
-          const conflict = (await db.listConflictsForAgent(agent.id)).find((candidate) =>
+          const conflicts = await db.listConflictsForAgent(agent.id);
+          const deletionBlockingConflict = conflicts.find((candidate) =>
             ['active', 'paused', 'judging'].includes(candidate.status),
+          );
+          const recoveryConflict = conflicts.find((candidate) =>
+            ['inviting', 'briefing', 'active', 'paused', 'judging'].includes(candidate.status),
           );
           return {
             ...agent,
-            deletion_blocked: Boolean(conflict),
-            active_conflict: conflict ? { id: conflict.id, title: conflict.title } : null,
+            deletion_blocked: Boolean(deletionBlockingConflict),
+            active_conflict: recoveryConflict
+              ? { id: recoveryConflict.id, title: recoveryConflict.title }
+              : null,
+            runner: await runnerStatus(agent.id),
           };
         }),
       ),
@@ -541,7 +581,7 @@ export function createApi(db: Database, options: Options = {}) {
     const value = await db.getAgent(c.req.param('id'));
     if (!value || value.ownerUserId !== user.id)
       throw new DomainError('NOT_FOUND', 'Agent not found.', 404);
-    return c.json({ agent: value });
+    return c.json({ agent: { ...value, runner: await runnerStatus(value.id) } });
   });
   app.delete('/api/v1/agents/:id', async (c) => {
     const user = human(c);
@@ -557,6 +597,7 @@ export function createApi(db: Database, options: Options = {}) {
         409,
       );
     if (result.status === 'not_found') throw new DomainError('NOT_FOUND', 'Agent not found.', 404);
+    await options.disconnectRunner?.(agentId, 'agent_deleted');
     for (const party of result.unboundParties)
       await db.appendEvent({
         conflictId: party.conflictId,
@@ -602,6 +643,7 @@ export function createApi(db: Database, options: Options = {}) {
     if (!ag || ag.ownerUserId !== user.id || ag.status !== 'active')
       throw new DomainError('NOT_FOUND', 'Agent not found.', 404);
     await db.revokeAllAgentTokens(ag.id);
+    await options.disconnectRunner?.(ag.id, 'credential_rotated');
     const raw = secureToken('rr_agent_');
     const timestamp = new Date().toISOString();
     const token = {
@@ -625,6 +667,7 @@ export function createApi(db: Database, options: Options = {}) {
   app.delete('/api/v1/agents/:id/tokens/:tokenId', async (c) => {
     const ok = await db.revokeAgentToken(c.req.param('tokenId'), human(c).id);
     if (!ok) throw new DomainError('NOT_FOUND', 'Credential not found.', 404);
+    await options.disconnectRunner?.(c.req.param('id'), 'credential_revoked');
     return c.body(null, 204);
   });
   app.post('/api/v1/conflicts/:id/agent', async (c) => {
@@ -681,12 +724,12 @@ export function createApi(db: Database, options: Options = {}) {
       createdAt,
     };
     await db.createAgentPairing(pairing);
-    const command = `npx --yes github:wedoso/resolveroom#main pair ${code} --origin ${allowedOrigin}`;
+    const command = `npx --yes github:wedoso/resolveroom#main connect ${code} --origin ${allowedOrigin}`;
     return c.json(
       {
         pairing: pairingView(pairing),
         code,
-        instruction: `Connect this Codex to ResolveRoom for “${conflict.title}”. Run \`${command}\`. Then inspect your assigned task, use only allowed actions, protect the private brief, and continue monitoring until the conflict resolves. Never print or reveal the credential returned during pairing.`,
+        instruction: `Connect this computer's Codex to ResolveRoom for “${conflict.title}”. Run \`${command}\` exactly once. It securely stores the credential and installs an always-on local Runner, so ResolveRoom can trigger later turns automatically. Protect the private brief and never print or reveal the stored credential.`,
         command,
         agent: { id: ag.id, name: ag.name },
         party: { id: party.id, role: party.role, agent_bound: true },
@@ -728,6 +771,7 @@ export function createApi(db: Database, options: Options = {}) {
     token.agentId = claimed.agentId;
     const ag = await db.getAgent(claimed.agentId);
     if (!ag) throw new DomainError('NOT_FOUND', 'This pairing code is unavailable.', 404);
+    await options.disconnectRunner?.(ag.id, 'credential_rotated');
     return c.json({
       credential: raw,
       credential_type: 'Bearer',
@@ -768,6 +812,10 @@ export function createApi(db: Database, options: Options = {}) {
       }),
     );
     return c.json({ tasks });
+  });
+  app.get('/api/v1/agent/runner', async (c) => {
+    const ag = agentIdentity(c);
+    return c.json({ agent: { id: ag.id, name: ag.name }, runner: await runnerStatus(ag.id) });
   });
   app.post('/api/v1/conflicts/:id/actions', async (c) => {
     const ag = agentIdentity(c);
@@ -958,7 +1006,7 @@ function pairingView(pairing: AgentPairing) {
     created_at: pairing.createdAt,
   };
 }
-function authoritativeTurn(conflict: any, parties: ConflictParty[], events: any[]) {
+export function authoritativeTurn(conflict: any, parties: ConflictParty[], events: any[]) {
   if (conflict.status !== 'active') return null;
   const first = parties.find((p) => p.id === conflict.firstSpeakerPartyId)?.role ?? 'party_a';
   const phaseIndex = Math.max(

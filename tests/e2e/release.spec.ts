@@ -190,7 +190,7 @@ test('landing and conflict creation are polished and functional', async ({ page 
   await expect(page.getByText('Private invitation link')).toBeVisible();
 });
 
-test('a participant pairs Codex from the conflict with one short-lived instruction', async ({
+test('a participant authorizes the Runner from the conflict with one short-lived instruction', async ({
   page,
   request,
 }) => {
@@ -213,12 +213,14 @@ test('a participant pairs Codex from the conflict with one short-lived instructi
 
   await page.goto(`/conflicts/${created.conflict.id}`);
   await expect(page.getByText('YOUR REPRESENTATIVE')).toBeVisible();
-  await page.getByRole('button', { name: 'Connect Codex' }).click();
-  await expect(page.getByRole('heading', { name: 'Pair with Codex' })).toBeVisible();
+  await page.getByRole('button', { name: 'Connect Runner' }).click();
+  await expect(page.getByRole('heading', { name: 'Connect your Runner' })).toBeVisible();
   await expect(page.getByText('ONE-TIME PAIRING CODE')).toBeVisible();
   const code = (await page.locator('.pairing-code strong').textContent())?.trim();
   expect(code).toMatch(/^[A-HJ-NP-Z2-9]{4}(?:-[A-HJ-NP-Z2-9]{4}){2}$/);
-  await expect(page.getByRole('button', { name: 'Copy instruction for Codex' })).toBeVisible();
+  await expect(
+    page.getByRole('button', { name: 'Copy one-time connection instruction' }),
+  ).toBeVisible();
   await expect(page.getByText(/works once, expires in ten minutes/)).toBeVisible();
   const accessibility = await new AxeBuilder({ page }).include('.dialog').analyze();
   const serious = accessibility.violations.filter((violation) =>
@@ -240,11 +242,11 @@ test('a participant pairs Codex from the conflict with one short-lived instructi
     ).status(),
   ).toBe(404);
 
-  await expect(page.getByText('Secure connection established')).toBeVisible({ timeout: 10_000 });
-  await expect(page.getByText(/Codex browser E2E connected/)).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Starting local Runner' })).toBeVisible({
+    timeout: 10_000,
+  });
+  await expect(page.getByText('Authorization complete')).toBeVisible();
   expect(await page.locator('body').textContent()).not.toContain(exchanged.credential);
-  await page.getByRole('button', { name: 'Continue briefing' }).click();
-  await expect(page.getByRole('button', { name: 'Reconnect Codex' })).toBeVisible();
   expect(signedIn.user.displayName).toBe('Pairing UI');
 });
 

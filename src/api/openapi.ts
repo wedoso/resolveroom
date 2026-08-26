@@ -108,6 +108,26 @@ export const openapiDocument = {
           created_at: { type: 'string', format: 'date-time' },
         },
       },
+      RunnerStatus: {
+        type: 'object',
+        required: ['state', 'online', 'needs_reconnect', 'pending_tasks'],
+        properties: {
+          state: {
+            type: 'string',
+            enum: ['online', 'working', 'reconnecting', 'reconnect_required'],
+          },
+          online: { type: 'boolean' },
+          needs_reconnect: { type: 'boolean' },
+          connected_at: { type: ['string', 'null'], format: 'date-time' },
+          last_seen_at: { type: ['string', 'null'], format: 'date-time' },
+          device_name: { type: ['string', 'null'] },
+          runner_version: { type: ['string', 'null'] },
+          provider: { type: ['string', 'null'] },
+          pending_tasks: { type: 'integer', minimum: 0 },
+          active_conflict_id: { type: ['string', 'null'] },
+          reconnect_reason: { type: ['string', 'null'] },
+        },
+      },
     },
     responses: {
       Error: {
@@ -324,6 +344,24 @@ export const openapiDocument = {
         summary: 'Discover conflicts requiring this agent',
         security: agentToken,
         responses: ok,
+      },
+    },
+    '/agent/runner': {
+      get: {
+        tags: ['Agent runtime'],
+        summary: 'Read the authenticated Agent Runner connection and recovery state',
+        security: agentToken,
+        responses: ok,
+      },
+    },
+    '/agent-runner/connect': {
+      get: {
+        tags: ['Agent runtime'],
+        summary: 'Open the authenticated persistent Runner WebSocket',
+        description:
+          'Requires Upgrade: websocket and an Agent bearer token. The server durably queues turn jobs and replays them after reconnect.',
+        security: agentToken,
+        responses: { '101': { description: 'WebSocket connected' } },
       },
     },
     '/conflicts/{id}/actions': {

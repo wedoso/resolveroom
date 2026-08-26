@@ -294,6 +294,7 @@ export class MemoryDatabase implements Database {
       this.parties.set(ownerParty.id, { ...ownerParty, agentId: pairing.agentId, ready: false });
     const claimed = { ...pairing, claimedAt: now.toISOString(), clientName };
     this.pairings.set(id, claimed);
+    await this.revokeAllAgentTokens(pairing.agentId);
     this.tokens.set(token.id, structuredClone({ ...token, agentId: pairing.agentId }));
     return structuredClone(claimed);
   }

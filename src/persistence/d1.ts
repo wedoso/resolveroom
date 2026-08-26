@@ -574,6 +574,11 @@ export class D1Store implements Database {
         ),
       this.db
         .prepare(
+          'UPDATE agent_tokens SET revoked_at=? WHERE agent_id=(SELECT agent_id FROM agent_pairings WHERE code_hash=? AND credential_id=?) AND revoked_at IS NULL',
+        )
+        .bind(claimedAt, codeHash, token.id),
+      this.db
+        .prepare(
           'INSERT INTO agent_tokens (id,agent_id,token_hash,token_prefix,created_at,last_used_at,revoked_at) SELECT credential_id,agent_id,credential_hash,credential_prefix,?,NULL,NULL FROM agent_pairings WHERE code_hash=? AND credential_id=?',
         )
         .bind(token.createdAt, codeHash, token.id),
@@ -583,7 +588,7 @@ export class D1Store implements Database {
         )
         .bind(codeHash, token.id),
     ]);
-    if (results[1].meta.changes !== 1 || results[2].meta.changes !== 1) return null;
+    if (results[1].meta.changes !== 1 || results[3].meta.changes !== 1) return null;
     const row = await this.db
       .prepare('SELECT * FROM agent_pairings WHERE code_hash=?')
       .bind(codeHash)

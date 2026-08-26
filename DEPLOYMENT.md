@@ -1,6 +1,6 @@
 # ResolveRoom deployment
 
-ResolveRoom deploys as one Cloudflare Worker with static assets, a D1 binding named `DB`, and a Durable Object namespace named `CONFLICT_ROOMS`. Feature development is complete; deployment requires only account-specific IDs, an application origin, and the production identity/Judge credentials selected by the operator.
+ResolveRoom deploys as one Cloudflare Worker with static assets, a D1 binding named `DB`, and Durable Object namespaces named `CONFLICT_ROOMS` and `AGENT_RUNNERS`. Feature development is complete; deployment requires only account-specific IDs, an application origin, and the production identity/Judge credentials selected by the operator.
 
 The recommended path is the checked-in GitHub Actions pipeline. Follow [docs/CICD_SETUP.zh-CN.md](./docs/CICD_SETUP.zh-CN.md) to configure the `production` GitHub Environment and trigger deployments from GitHub. The steps below remain useful for a local/manual deployment.
 
@@ -22,7 +22,7 @@ export CLOUDFLARE_API_TOKEN="<scoped-api-token>"
 export PUBLIC_APP_URL="https://resolve.example.com"
 ```
 
-The Durable Object binding and SQLite class migration are already declared.
+Both Durable Object bindings and their SQLite class migrations are already declared. The `AgentRunner` migration creates the agent-scoped presence and durable-dispatch coordinator; no new secret is required.
 
 Set the selected production-safe modes in the environment before generating the deploy config:
 
@@ -110,8 +110,8 @@ Then verify in a browser:
 
 1. Sign in with each configured provider.
 2. Create a conflict and inspect the invitation URL.
-3. Join as a second account, use **Connect Codex** in each conflict room, save both private briefs, and select Ready.
-4. Submit an Agent API action and confirm the transcript updates without a refresh.
+3. Join as a second account, use **Connect Codex** in each conflict room, and confirm both status cards say **Runner online**.
+4. Save both private briefs, select Ready once per person, and confirm the server triggers the full protocol without further local commands.
 5. Complete the protocol and create then revoke a share link. If `JUDGE_PROVIDER=llm`, also confirm the advisory verdict.
 6. Confirm a revoked agent token and revoked share link both fail immediately.
 
@@ -121,7 +121,8 @@ The HTML response should include CSP, clickjacking, MIME-sniffing, referrer, per
 
 - Structured Worker logs include request ID, method, route, status, duration, conflict ID when present, and actor type. They intentionally exclude bodies, tokens, briefs, and transcript content.
 - Use the `x-request-id` response header to correlate a user-visible stable error with logs.
-- D1 is authoritative. WebSocket messages only ask clients to refetch; reconnecting cannot lose durable history.
+- D1 is authoritative for product records. Browser WebSockets ask clients to refetch; AgentRunner Durable Objects persist pending jobs and replay them with stable request IDs after a Runner reconnects.
+- Runner presence is visible in `/agents` and each conflict. A short disconnect shows **Reconnecting**; a stale or missing connection shows **Reconnect required** and links to the replacement pairing flow.
 - In-app notifications are always persisted. External email is best-effort.
 - Account deletion uses the internal `Database.anonymizeUser` primitive, preserving the audit record while replacing identity fields; a self-service deletion UI is outside V0 scope.
 

@@ -59,7 +59,7 @@ describe('single-use Codex pairing', () => {
     });
     expect(created.response.status).toBe(201);
     expect(created.body.code).toMatch(/^[A-HJ-NP-Z2-9]{4}(?:-[A-HJ-NP-Z2-9]{4}){2}$/);
-    expect(created.body.instruction).toContain('npx --yes github:wedoso/resolveroom#main pair');
+    expect(created.body.instruction).toContain('npx --yes github:wedoso/resolveroom#main connect');
     expect(created.body.instruction).not.toContain('rr_agent_');
 
     const before = await h.request(`/api/v1/conflicts/${h.conflictId}`, {
@@ -111,9 +111,11 @@ describe('single-use Codex pairing', () => {
     const after = await h.request(`/api/v1/conflicts/${h.conflictId}`, {
       headers: h.aliceHeaders,
     });
-    expect(
-      after.body.parties.find((party: any) => party.role === after.body.your_party).agent_connected,
-    ).toBe(true);
+    const connectedParty = after.body.parties.find(
+      (party: any) => party.role === after.body.your_party,
+    );
+    expect(connectedParty.agent_connected).toBe(false);
+    expect(connectedParty.runner.state).toBe('reconnect_required');
     expect(JSON.stringify([...h.db.pairings.values()])).not.toContain(created.body.code);
     expect(JSON.stringify([...h.db.tokens.values()])).not.toContain(success.body.credential);
   });
@@ -149,6 +151,49 @@ describe('single-use Codex pairing', () => {
         })
       ).response.status,
     ).toBe(404);
+  });
+
+  it('rotates the previous credential when an agent reconnects', async () => {
+    const h = await setup();
+    const firstPairing = await h.request(`/api/v1/conflicts/${h.conflictId}/agent/pairings`, {
+      method: 'POST',
+      headers: h.aliceHeaders,
+      body: '{}',
+    });
+    const firstExchange = await h.request('/api/v1/agent-pairings/exchange', {
+      method: 'POST',
+      body: JSON.stringify({ code: firstPairing.body.code, client_name: 'Original Runner' }),
+    });
+    expect(firstExchange.response.status).toBe(200);
+
+    const replacementPairing = await h.request(`/api/v1/conflicts/${h.conflictId}/agent/pairings`, {
+      method: 'POST',
+      headers: h.aliceHeaders,
+      body: '{}',
+    });
+    const replacementExchange = await h.request('/api/v1/agent-pairings/exchange', {
+      method: 'POST',
+      body: JSON.stringify({
+        code: replacementPairing.body.code,
+        client_name: 'Replacement Runner',
+      }),
+    });
+    expect(replacementExchange.response.status).toBe(200);
+
+    expect(
+      (
+        await h.request('/api/v1/agent/tasks', {
+          headers: { authorization: `Bearer ${firstExchange.body.credential}` },
+        })
+      ).response.status,
+    ).toBe(401);
+    expect(
+      (
+        await h.request('/api/v1/agent/tasks', {
+          headers: { authorization: `Bearer ${replacementExchange.body.credential}` },
+        })
+      ).response.status,
+    ).toBe(200);
   });
 
   it('repairs a missing party binding before reporting the pairing as connected', async () => {

@@ -85,6 +85,10 @@ export function ConflictRoomPage() {
     void load();
   }, [load]);
   useEffect(() => {
+    const interval = window.setInterval(() => void load(), 10_000);
+    return () => window.clearInterval(interval);
+  }, [load]);
+  useEffect(() => {
     if (!id) return;
     let socket: WebSocket | undefined;
     let retry: number | undefined;
@@ -510,7 +514,7 @@ function AgentCard({
   };
   useEffect(() => {
     const pairingId = pairing?.pairing?.id;
-    if (!pairingId || pairing.pairing.status !== 'waiting') return;
+    if (!pairingId || (pairing.pairing.status !== 'waiting' && party.runner?.online)) return;
     const refresh = async () => {
       try {
         const value = await api<any>(`/agent-pairings/${pairingId}`, { cache: 'no-store' });
@@ -522,7 +526,7 @@ function AgentCard({
     };
     const interval = window.setInterval(() => void refresh(), 2000);
     return () => window.clearInterval(interval);
-  }, [pairing?.pairing?.id, pairing?.pairing?.status, load]);
+  }, [pairing?.pairing?.id, pairing?.pairing?.status, party.runner?.online, load]);
   const ready = async () => {
     setBusy(true);
     await api(`/conflicts/${id}/ready`, { method: 'POST', body: '{"ready":true}' });
@@ -532,19 +536,44 @@ function AgentCard({
   return (
     <section className="rail-section">
       <div className="rail-label">
-        YOUR REPRESENTATIVE <span>{party.agent_connected ? 'CONNECTED' : 'ACTION NEEDED'}</span>
+        YOUR REPRESENTATIVE{' '}
+        <span className={`runner-label ${party.runner?.state ?? 'reconnect_required'}`}>
+          {party.runner?.state === 'working'
+            ? 'WORKING'
+            : party.runner?.online
+              ? 'RUNNER ONLINE'
+              : party.runner?.state === 'reconnecting'
+                ? 'RECONNECTING'
+                : 'RECONNECT REQUIRED'}
+        </span>
       </div>
-      <div className="agent-rail-card">
+      <div className={`agent-rail-card runner-${party.runner?.state ?? 'reconnect_required'}`}>
         <Bot />
         <div>
-          <strong>{party.agent_connected ? 'Codex connected' : 'Connect Codex'}</strong>
+          <strong>
+            {party.runner?.state === 'working'
+              ? 'Runner is working'
+              : party.runner?.online
+                ? 'Runner is online'
+                : party.runner?.state === 'reconnecting'
+                  ? 'Runner is reconnecting'
+                  : party.agent_bound
+                    ? 'Reconnect your Runner'
+                    : 'Connect your Runner'}
+          </strong>
           <p>
-            {party.agent_connected
-              ? 'Your agent can securely discover and act on this conflict.'
-              : 'Send one short-lived pairing instruction to your Codex. No API key setup required.'}
+            {party.runner?.state === 'working'
+              ? 'A turn is being prepared locally. Private context stays on this authorized connection.'
+              : party.runner?.online
+                ? `Automatic turns are enabled${party.runner.device_name ? ` on ${party.runner.device_name}` : ''}. You may close this page.`
+                : party.runner?.state === 'reconnecting'
+                  ? 'The local service is retrying automatically. If it remains offline, use Reconnect Runner.'
+                  : party.agent_bound
+                    ? `The Agent identity is authorized, but no live Runner is available${party.runner?.last_seen_at ? ` (last seen ${new Date(party.runner.last_seen_at).toLocaleString()})` : ''}.`
+                    : 'Send one short-lived instruction to Codex. It installs a local service that stays connected.'}
           </p>
         </div>
-        {party.agent_connected ? (
+        {party.runner?.online ? (
           <>
             <button
               className="button secondary wide"
@@ -567,14 +596,14 @@ function AgentCard({
               disabled={busy}
               onClick={() => void startPairing()}
             >
-              Reconnect Codex →
+              Reconnect Runner →
             </button>
           </>
         ) : (
           <>
             <button className="button wide" disabled={busy} onClick={() => void startPairing()}>
               {busy ? <LoaderCircle className="spin" /> : <Link2 />}
-              {party.agent_bound ? 'Pair Codex' : 'Connect Codex'}
+              {party.agent_bound ? 'Reconnect Runner' : 'Connect Runner'}
             </button>
             {pairingError && (
               <p className="form-error" role="alert">
@@ -612,11 +641,19 @@ function AgentCard({
       <Dialog
         open={Boolean(pairing)}
         onClose={() => setPairing(null)}
-        title={pairing?.pairing?.status === 'connected' ? 'Codex connected' : 'Pair with Codex'}
+        title={
+          pairing?.pairing?.status === 'connected' && party.runner?.online
+            ? 'Runner online'
+            : pairing?.pairing?.status === 'connected'
+              ? 'Starting local Runner'
+              : 'Connect your Runner'
+        }
         description={
-          pairing?.pairing?.status === 'connected'
-            ? 'This representative is ready to receive authorized ResolveRoom tasks.'
-            : 'Copy one instruction into a Codex task. The pairing code is short-lived and single-use.'
+          pairing?.pairing?.status === 'connected' && party.runner?.online
+            ? 'ResolveRoom can now push authorized turns to this computer automatically.'
+            : pairing?.pairing?.status === 'connected'
+              ? 'Authorization succeeded. Waiting for the local background service to report online.'
+              : 'Copy one instruction into a Codex task. It pairs once and installs the background Runner.'
         }
       >
         {pairing && (
@@ -630,14 +667,15 @@ function AgentCard({
                 3 · Connected
               </li>
             </ol>
-            {pairing.pairing.status === 'connected' ? (
+            {pairing.pairing.status === 'connected' && party.runner?.online ? (
               <div className="pairing-success">
                 <span>
                   <Check />
                 </span>
-                <h3>Secure connection established</h3>
+                <h3>Runner is online</h3>
                 <p>
-                  {pairing.pairing.client_name ?? 'Codex'} connected{' '}
+                  {party.runner.device_name ?? pairing.pairing.client_name ?? 'This computer'}{' '}
+                  connected{' '}
                   {pairing.pairing.claimed_at
                     ? new Date(pairing.pairing.claimed_at).toLocaleTimeString()
                     : 'just now'}
@@ -646,6 +684,17 @@ function AgentCard({
                 <button className="button wide" onClick={() => setPairing(null)}>
                   Continue briefing
                 </button>
+              </div>
+            ) : pairing.pairing.status === 'connected' ? (
+              <div className="pairing-success pending">
+                <span>
+                  <LoaderCircle className="spin" />
+                </span>
+                <h3>Authorization complete</h3>
+                <p>
+                  Codex is installing and starting the local Runner. This normally takes less than a
+                  minute; the page will update automatically.
+                </p>
               </div>
             ) : pairing.pairing.status === 'waiting' ? (
               <>
@@ -662,13 +711,13 @@ function AgentCard({
                   }}
                 >
                   {copied ? <Check /> : <Copy />}
-                  {copied ? 'Instruction copied' : 'Copy instruction for Codex'}
+                  {copied ? 'Instruction copied' : 'Copy one-time connection instruction'}
                 </button>
                 <div className="pairing-safety">
                   <ShieldCheck />
                   <p>
                     This code contains no long-lived credential. It works once, expires in ten
-                    minutes, and can only connect your authorized Agent.
+                    minutes, and installs a Runner that reconnects automatically after restarts.
                   </p>
                 </div>
                 <p className="pairing-waiting">

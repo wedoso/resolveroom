@@ -1,5 +1,6 @@
 import { TransitionSeries, linearTiming } from '@remotion/transitions';
 import { fade } from '@remotion/transitions/fade';
+import { Audio, Video } from '@remotion/media';
 import { AbsoluteFill, Easing, Img, interpolate, staticFile, useCurrentFrame } from 'remotion';
 
 const FOREST = '#173f32';
@@ -12,15 +13,10 @@ const SCENE_DURATION = 120;
 const INTRO_DURATION = 105;
 const OUTRO_DURATION = 105;
 const TRANSITION_DURATION = 15;
-const SCREEN_COUNT = 7;
-export const WALKTHROUGH_DURATION =
-  INTRO_DURATION +
-  SCREEN_COUNT * SCENE_DURATION +
-  OUTRO_DURATION -
-  (SCREEN_COUNT + 1) * TRANSITION_DURATION;
-
 type Scene = {
-  image: string;
+  media: string;
+  kind?: 'image' | 'video';
+  duration?: number;
   eyebrow: string;
   title: string;
   body: string;
@@ -28,48 +24,56 @@ type Scene = {
 
 const scenes: Scene[] = [
   {
-    image: 'resolveroom-overview.jpg',
+    media: 'resolveroom-overview.jpg',
     eyebrow: '01 · START PRIVATE',
     title: 'A calm place for structured disagreement.',
     body: 'Two people define one conflict. Nothing is publicly listed, and the protocol stays finite.',
   },
   {
-    image: 'resolveroom-dashboard.jpg',
+    media: 'resolveroom-dashboard.jpg',
     eyebrow: '02 · STAY ORIENTED',
     title: 'See every case and what needs attention.',
     body: 'The dashboard groups active, waiting, resolved, cancelled, and expired conflicts around the next useful action.',
   },
   {
-    image: 'resolveroom-codex-pairing.jpg',
+    media: 'resolveroom-codex-pairing.jpg',
     eyebrow: '03 · CONNECT IN ONE STEP',
     title: 'Give Codex one short-lived instruction.',
-    body: 'ResolveRoom creates and binds the representative automatically. The code works once and never exposes a long-lived credential in the browser.',
+    body: 'ResolveRoom pairs once, installs a local Runner, and shows whether it is online, reconnecting, or needs attention.',
   },
   {
-    image: 'resolveroom-private-brief.jpg',
+    media: 'resolveroom-private-brief.jpg',
     eyebrow: '04 · BRIEF PRIVATELY',
     title: 'Each side briefs only its own agent.',
     body: 'Goals, priorities, compromises, and notes never enter the opponent view or the Judge record.',
   },
   {
-    image: 'resolveroom-conflict-room.jpg',
-    eyebrow: '05 · WATCH IT WORK',
-    title: 'Agents complete a live, finite protocol.',
-    body: 'Opening, rebuttal, and closing turns are enforced server-side and persisted as an append-only record.',
+    media: 'resolveroom-e2e-recording.webm',
+    kind: 'video',
+    duration: 315,
+    eyebrow: '05 · RUNNERS STAY ONLINE',
+    title: 'The server triggers every next turn.',
+    body: 'This real E2E recording shows two local Runners completing all six turns while the browser only observes.',
   },
   {
-    image: 'resolveroom-verdict.jpg',
+    media: 'resolveroom-verdict.jpg',
     eyebrow: '06 · REACH AN OUTCOME',
     title: 'The Judge returns a validated advisory verdict.',
     body: 'A structured assessment explains the deciding points, scores both cases, and clearly states its limits.',
   },
   {
-    image: 'resolveroom-share-view.jpg',
+    media: 'resolveroom-share-view.jpg',
     eyebrow: '07 · SHARE SAFELY',
     title: 'Publish only a permission-filtered observer view.',
     body: 'Unlisted links are read-only and revocable. Private briefs, credentials, and private events stay out.',
   },
 ];
+const SCREEN_COUNT = scenes.length;
+export const WALKTHROUGH_DURATION =
+  INTRO_DURATION +
+  scenes.reduce((total, scene) => total + (scene.duration ?? SCENE_DURATION), 0) +
+  OUTRO_DURATION -
+  (SCREEN_COUNT + 1) * TRANSITION_DURATION;
 
 const Grid = () => (
   <AbsoluteFill
@@ -155,7 +159,7 @@ const Intro = () => {
         <div
           style={{ marginTop: 40, fontSize: 30, color: MUTED, maxWidth: 1060, lineHeight: 1.45 }}
         >
-          A 31-second tour of the complete ResolveRoom workflow.
+          A short tour of the complete ResolveRoom workflow, including a real automated run.
         </div>
       </div>
       <div
@@ -179,13 +183,14 @@ const Intro = () => {
 
 const ScreenshotScene = ({ scene, index }: { scene: Scene; index: number }) => {
   const frame = useCurrentFrame();
+  const duration = scene.duration ?? SCENE_DURATION;
   const enter = interpolate(frame, [0, 35], [0, 1], {
     easing: Easing.bezier(0.16, 1, 0.3, 1),
     extrapolateLeft: 'clamp',
     extrapolateRight: 'clamp',
   });
   const imageX = interpolate(enter, [0, 1], [80, 0]);
-  const imageScale = interpolate(frame, [0, SCENE_DURATION], [0.985, 1.015], {
+  const imageScale = interpolate(frame, [0, duration], [0.985, 1.015], {
     extrapolateLeft: 'clamp',
     extrapolateRight: 'clamp',
     easing: Easing.inOut(Easing.cubic),
@@ -268,10 +273,18 @@ const ScreenshotScene = ({ scene, index }: { scene: Scene; index: number }) => {
             app.resolveroom.example
           </div>
         </div>
-        <Img
-          src={staticFile(scene.image)}
-          style={{ width: '100%', height: 700, objectFit: 'cover', objectPosition: 'top' }}
-        />
+        {scene.kind === 'video' ? (
+          <Video
+            src={staticFile(scene.media)}
+            muted
+            style={{ width: '100%', height: 700, objectFit: 'cover', objectPosition: 'top' }}
+          />
+        ) : (
+          <Img
+            src={staticFile(scene.media)}
+            style={{ width: '100%', height: 700, objectFit: 'cover', objectPosition: 'top' }}
+          />
+        )}
       </div>
       <div
         style={{
@@ -356,19 +369,35 @@ const transition = (key: string) => (
 );
 
 export const ResolveRoomWalkthrough = () => (
-  <TransitionSeries>
-    <TransitionSeries.Sequence durationInFrames={INTRO_DURATION}>
-      <Intro />
-    </TransitionSeries.Sequence>
-    {scenes.flatMap((scene, index) => [
-      transition(`transition-${scene.image}`),
-      <TransitionSeries.Sequence key={scene.image} durationInFrames={SCENE_DURATION}>
-        <ScreenshotScene scene={scene} index={index} />
-      </TransitionSeries.Sequence>,
-    ])}
-    {transition('transition-outro')}
-    <TransitionSeries.Sequence durationInFrames={OUTRO_DURATION}>
-      <Outro />
-    </TransitionSeries.Sequence>
-  </TransitionSeries>
+  <AbsoluteFill>
+    <Audio
+      src={staticFile('resolveroom-soundtrack.mp3')}
+      volume={(frame) =>
+        interpolate(
+          frame,
+          [0, 45, WALKTHROUGH_DURATION - 75, WALKTHROUGH_DURATION],
+          [0, 0.14, 0.14, 0],
+          { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' },
+        )
+      }
+    />
+    <TransitionSeries>
+      <TransitionSeries.Sequence durationInFrames={INTRO_DURATION}>
+        <Intro />
+      </TransitionSeries.Sequence>
+      {scenes.flatMap((scene, index) => [
+        transition(`transition-${scene.media}`),
+        <TransitionSeries.Sequence
+          key={scene.media}
+          durationInFrames={scene.duration ?? SCENE_DURATION}
+        >
+          <ScreenshotScene scene={scene} index={index} />
+        </TransitionSeries.Sequence>,
+      ])}
+      {transition('transition-outro')}
+      <TransitionSeries.Sequence durationInFrames={OUTRO_DURATION}>
+        <Outro />
+      </TransitionSeries.Sequence>
+    </TransitionSeries>
+  </AbsoluteFill>
 );

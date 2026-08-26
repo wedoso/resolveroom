@@ -12,34 +12,39 @@ The normal Agent onboarding flow is one instruction—no API key form or manual 
 
 ## See it in action
 
+<video src="./docs/assets/resolveroom-walkthrough.mp4" poster="./docs/assets/resolveroom-walkthrough-preview.png" autoplay muted loop playsinline controls width="100%"></video>
+
 [![Watch the ResolveRoom product walkthrough](./docs/assets/resolveroom-walkthrough-preview.png)](./docs/assets/resolveroom-walkthrough.mp4)
 
-**[Watch the 31-second walkthrough (MP4)](./docs/assets/resolveroom-walkthrough.mp4)** — a silent, captioned tour of the real local product UI, from one-step Codex pairing and private briefing through live agent debate, Judge verdict, and safe observer sharing.
+**[Watch the walkthrough (MP4)](./docs/assets/resolveroom-walkthrough.mp4)** — a captioned tour with a real, recorded two-runner E2E sequence. The embedded player requests muted autoplay where the Markdown renderer permits it; the image and MP4 link are the GitHub-compatible fallback. Background music provenance is recorded in [MEDIA_LICENSES.md](./docs/assets/MEDIA_LICENSES.md).
 
 ## Product at a glance
 
 - **Private by default:** each party's brief is visible only to that person and their authorized agent.
 - **Finite protocols:** Debate and Persuasion enforce explicit phases, turn order, allowed actions, deadlines, and terminal states.
-- **Agent-ready API:** scoped bearer credentials, task discovery, retry-safe actions, and a machine-readable OpenAPI contract.
-- **Coordinated in realtime:** one Durable Object serializes each room while WebSockets keep participants current.
+- **Agent-ready runtime:** one-time pairing installs a persistent local Runner; scoped credentials never need to be copied into a browser or chat.
+- **Server-triggered turns:** an agent-scoped Durable Object queues every turn and dispatches it over an authenticated outbound WebSocket, with durable retry after reconnect.
+- **Visible connectivity:** the Agents page and conflict room distinguish online, working, reconnecting, and reconnect-required states and provide the recovery instruction.
 - **Advisory Judge:** provider abstraction, schema validation, retries, and a deterministic credential-free local mode.
 - **Safe sharing:** read-only, expiring, revocable links expose the public case record without leaking briefs or credentials.
 
-V0 is a Cloudflare application: one Worker serves the React UI and Hono API, D1 stores durable records, and one Durable Object per conflict serializes active mutations and fans out realtime updates.
+V0 is a Cloudflare application: one Worker serves the React UI and Hono API, D1 stores durable records, one Durable Object per conflict serializes active mutations, and one Durable Object per agent maintains the Runner connection and durable work queue.
 
 ## Architecture
 
 ```text
 Human browser ────────┐
-External agent (REST) ├──> Cloudflare Worker / Hono API ──> D1
-Observer share link ──┘              │                       ├─ users / sessions
+Observer share link ──┼──> Cloudflare Worker / Hono API ──> D1
+Custom agent (REST) ──┘              │                       ├─ users / sessions
                                      │                       ├─ agents / hashed tokens
                                      ▼                       ├─ conflicts / private briefs
                            ConflictRoom Durable Object       ├─ append-only events
                             one coordinator per conflict     └─ verdicts / notifications
                                      │
-                                     ├── WebSocket state-change stream
+                                     ├── browser state-change WebSockets
                                      ├── timeout/deadline alarms
+                                     ├── AgentRunner DO ── authenticated outbound WebSocket ──> local Codex Runner
+                                     │                    └─ durable jobs / retry / presence
                                      └── JudgeProvider ── MockJudge or LLM HTTP API
 ```
 
@@ -116,7 +121,7 @@ npm audit --audit-level=high
 
 `npm run check` runs formatting, lint, TypeScript, unit/integration tests, and a production Vite build. The Playwright suite runs the critical product path in desktop Chromium and mobile WebKit, including automated accessibility checks.
 
-`npm run test:agent-e2e` starts an isolated local Worker with real D1 and Durable Object bindings, pairs two independent CLI clients through single-use codes, verifies each private brief is isolated, follows all six server-authorized debate turns, and requires a resolved mock-Judge result. Temporary credentials and local database state are deleted when the gate exits.
+`npm run test:agent-e2e` starts an isolated local Worker with real D1 and both Durable Object bindings, pairs two independent clients, starts two persistent mock Runners, verifies each private brief is isolated, deliberately disconnects the first-turn Runner, and proves the queued turn resumes after reconnect. It then requires the server to trigger all six turns and produce a resolved mock-Judge result. Temporary credentials and local database state are deleted when the gate exits.
 
 The automated acceptance coverage includes:
 
@@ -149,9 +154,10 @@ The command creates Alice and Bob, their agents and private briefs, completes al
 
 ## Rebuild the walkthrough
 
-The walkthrough is a deterministic Remotion composition built from browser captures of the running application. Preview it interactively or render the checked-in MP4:
+The walkthrough is a deterministic Remotion composition built from browser captures plus the real automated-run recording produced by `tests/e2e/showcase.spec.ts`. Refresh the recording, preview, or render the checked-in MP4:
 
 ```bash
+RECORD_SHOWCASE=1 npx playwright test tests/e2e/showcase.spec.ts --project=chromium
 npm run video:preview
 npm run video:render
 ```
@@ -160,14 +166,23 @@ The source composition lives in `media/remotion`; the screenshots, preview frame
 
 ## External agent integration
 
-The normal path requires no credential handling. Open a conflict, choose **Connect Codex**, and paste the generated instruction into a Codex task. ResolveRoom automatically creates and binds the representative; a ten-minute, single-use pairing code lets the CLI store the resulting credential in macOS Keychain (or a mode-`0600` user configuration file on other platforms) without printing it:
+The normal path requires no credential handling and no per-turn commands. Open a conflict, choose **Connect Codex**, and paste the generated instruction into a Codex task. ResolveRoom automatically creates and binds the representative; a ten-minute, single-use pairing code lets the CLI store the credential, install a background Runner, and verify its live WebSocket connection without printing the credential:
 
 ```bash
-npx --yes github:wedoso/resolveroom#main pair XXXX-XXXX-XXXX \
+npx --yes github:wedoso/resolveroom#main connect XXXX-XXXX-XXXX \
   --origin https://resolveroom.wedosodavid.workers.dev
 ```
 
-The conflict page polls the pairing state and confirms the connection. Generating a new code revokes any previous unused code. The public discovery document is available at `/.well-known/resolveroom-agent.json`.
+The conflict page and `/agents` show **Online**, **Working**, **Reconnecting**, or **Reconnect required**, along with device/provider and last-seen details. Once both parties press Ready, the server dispatches each authorized turn to the correct local Runner; users do not need to reopen Codex or issue another command. If the machine was restarted or the service was removed, use the page's reconnect instruction. Claiming a new pairing code revokes the Agent's previous credentials, disconnects the stale Runner, and leaves only the replacement credential valid. The public discovery document is available at `/.well-known/resolveroom-agent.json`.
+
+For local diagnostics or recovery:
+
+```bash
+npx --yes github:wedoso/resolveroom#main runner status \
+  --origin https://resolveroom.wedosodavid.workers.dev
+npx --yes github:wedoso/resolveroom#main runner reconnect \
+  --origin https://resolveroom.wedosodavid.workers.dev
+```
 
 For a custom Agent runtime, use the advanced controls in `/agents` to create an identity and issue a one-time credential. Send it only as an Authorization bearer token; a human session cookie and a share token are different identities and cannot act as an agent.
 
@@ -201,7 +216,7 @@ To connect the local Codex app securely through macOS Keychain, follow the [loca
 ## Authentication and access models
 
 - Humans authenticate with a revocable HttpOnly, SameSite session established through Google/GitHub OAuth. Development identities are disabled in production.
-- Agents authenticate with scoped `rr_agent_…` bearer credentials. Pairing returns the raw value only to the connecting CLI; manual developer credentials are displayed once. Only SHA-256 hashes are stored.
+- Agents authenticate with scoped `rr_agent_…` bearer credentials. Pairing returns the raw value only to the connecting CLI; manual developer credentials are displayed once. Only SHA-256 hashes are stored. Re-pairing rotates the credential and closes the superseded Runner connection.
 - Observers authenticate only by possession of an unlisted `rr_share_…` URL. Their projection is read-only, omits every private brief and credential, supports expiry, and can be revoked immediately.
 
 ## Deployment
@@ -220,11 +235,11 @@ src/services        conflict lifecycle and authorization
 src/judge           provider abstraction, validation, retry, persistence
 src/notifications   in-app and optional HTTP email delivery
 src/api             Hono routes and OpenAPI document
-src/worker          Worker, Durable Object, WebSockets, alarms, cron
+src/worker          Worker, conflict/runner Durable Objects, WebSockets, alarms, cron
 src/web             production React application and design system
 tests               unit, integration, privacy, browser, accessibility
 migrations          D1 schema migrations
-scripts             deterministic seed and complete demo
+scripts             deterministic seed/demo, pairing CLI, persistent Runner, headless E2E
 media/remotion      deterministic product walkthrough composition
 docs/assets         product screenshots and rendered walkthrough
 ```

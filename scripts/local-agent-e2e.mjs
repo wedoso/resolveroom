@@ -17,6 +17,7 @@ const clientAConfig = join(temporaryRoot, 'client-a');
 const clientBConfig = join(temporaryRoot, 'client-b');
 let worker;
 let workerLog = '';
+const runners = [];
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -64,6 +65,48 @@ function runAgent(configRoot, origin, args, input) {
     input,
   });
   return JSON.parse(output);
+}
+
+function startAgentRunner(configRoot, origin, label) {
+  const child = spawn(process.execPath, [agentCli, 'runner', 'start', '--origin', origin], {
+    cwd: repository,
+    detached: process.platform !== 'win32',
+    env: {
+      ...clientEnvironment(configRoot),
+      RESOLVEROOM_RUNNER_PROVIDER: 'mock',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  const value = { child, label, log: '' };
+  for (const stream of [child.stdout, child.stderr])
+    stream.on('data', (chunk) => {
+      value.log = `${value.log}${chunk.toString()}`.slice(-8_000);
+    });
+  runners.push(value);
+  return value;
+}
+
+async function waitForRunnerOnline(origin, headers, agentId) {
+  const deadline = Date.now() + 20_000;
+  while (Date.now() < deadline) {
+    const agents = await json(origin, '/agents', { headers });
+    const agent = agents.agents.find((candidate) => candidate.id === agentId);
+    if (agent?.runner?.online) return agent.runner;
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 200));
+  }
+  const logs = runners.map((runner) => `${runner.label}:\n${runner.log}`).join('\n');
+  throw new Error(`Runners did not report online.\n${logs}`);
+}
+
+async function waitForRunnerOffline(origin, headers, agentId) {
+  const deadline = Date.now() + 20_000;
+  while (Date.now() < deadline) {
+    const agents = await json(origin, '/agents', { headers });
+    const agent = agents.agents.find((candidate) => candidate.id === agentId);
+    if (agent?.runner && !agent.runner.online) return agent.runner;
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 200));
+  }
+  throw new Error('The stopped Runner continued to report online.');
 }
 
 async function json(origin, path, init = {}) {
@@ -123,6 +166,24 @@ async function stopWorker() {
   if (await waitForWorkerExit(5_000)) return;
   signalWorker('SIGKILL');
   await waitForWorkerExit(2_000);
+}
+
+async function stopRunners() {
+  for (const runner of runners) await stopRunner(runner);
+  await new Promise((resolvePromise) => setTimeout(resolvePromise, 200));
+}
+
+async function stopRunner({ child }) {
+  if (!child.pid || child.exitCode !== null || child.signalCode !== null) return;
+  const exited = new Promise((resolvePromise) => child.once('exit', resolvePromise));
+  try {
+    if (process.platform === 'win32') child.kill('SIGTERM');
+    else process.kill(-child.pid, 'SIGTERM');
+  } catch (error) {
+    if (error?.code !== 'ESRCH') throw error;
+    return;
+  }
+  await Promise.race([exited, new Promise((resolvePromise) => setTimeout(resolvePromise, 3_000))]);
 }
 
 async function main() {
@@ -249,6 +310,13 @@ async function main() {
   assert(pairedA.conflict_id === conflict.id, 'Alice pairing returned the wrong conflict.');
   assert(pairedB.conflict_id === conflict.id, 'Bob pairing returned the wrong conflict.');
 
+  const aliceRunnerProcess = startAgentRunner(clientAConfig, origin, 'Alice Runner');
+  startAgentRunner(clientBConfig, origin, 'Bob Runner');
+  const runnerA = await waitForRunnerOnline(origin, aliceHeaders, pairedA.agent.id);
+  const runnerB = await waitForRunnerOnline(origin, bobHeaders, pairedB.agent.id);
+  assert(runnerA.state === 'online', `Alice Runner state is ${runnerA.state}.`);
+  assert(runnerB.state === 'online', `Bob Runner state is ${runnerB.state}.`);
+
   const tasksA = runAgent(clientAConfig, origin, ['tasks']);
   const tasksB = runAgent(clientBConfig, origin, ['tasks']);
   assert(
@@ -269,6 +337,13 @@ async function main() {
   assert(serializedB.includes(bobSecret), 'Bob could not access his private brief.');
   assert(!serializedB.includes(aliceSecret), 'Bob received Alice private brief data.');
 
+  await stopRunner(aliceRunnerProcess);
+  const disconnected = await waitForRunnerOffline(origin, aliceHeaders, pairedA.agent.id);
+  assert(
+    ['reconnecting', 'reconnect_required'].includes(disconnected.state),
+    `Alice Runner did not expose a recovery state after disconnect (${disconnected.state}).`,
+  );
+
   await json(origin, `/conflicts/${conflict.id}/ready`, {
     method: 'POST',
     headers: aliceHeaders,
@@ -281,40 +356,18 @@ async function main() {
   });
   assert(started.started === true, 'The conflict did not start after both parties became ready.');
 
-  const clients = [
-    { label: 'Alice', config: clientAConfig, secret: aliceSecret, otherSecret: bobSecret },
-    { label: 'Bob', config: clientBConfig, secret: bobSecret, otherSecret: aliceSecret },
-  ];
-  for (let turn = 0; turn < 6; turn += 1) {
-    const contexts = clients.map((client) => ({
-      ...client,
-      context: runAgent(client.config, origin, ['context', conflict.id]),
-    }));
-    for (const client of contexts) {
-      const serialized = JSON.stringify(client.context);
-      assert(serialized.includes(client.secret), `${client.label} lost private brief access.`);
-      assert(
-        !serialized.includes(client.otherSecret),
-        `${client.label} received the other private brief.`,
-      );
-    }
-    const actionable = contexts.filter((client) => client.context.task?.your_turn);
-    assert(
-      actionable.length === 1,
-      `Expected exactly one actionable Codex task on turn ${turn + 1}.`,
-    );
-    const acting = actionable[0];
-    const action = acting.context.task.allowed_actions[0];
-    assert(action, `No allowed action was returned on turn ${turn + 1}.`);
-    runAgent(
-      acting.config,
-      origin,
-      ['act', conflict.id, action, `local-agent-e2e-${turn}`],
-      `${acting.label} submits a concrete ${action} for turn ${turn + 1}, grounded in the public case.`,
-    );
+  startAgentRunner(clientAConfig, origin, 'Alice reconnected Runner');
+  await waitForRunnerOnline(origin, aliceHeaders, pairedA.agent.id);
+
+  const resolutionDeadline = Date.now() + 30_000;
+  let finalState;
+  while (Date.now() < resolutionDeadline) {
+    finalState = await json(origin, `/conflicts/${conflict.id}`, { headers: aliceHeaders });
+    if (finalState.status === 'resolved') break;
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 200));
   }
 
-  const finalState = await json(origin, `/conflicts/${conflict.id}`, { headers: aliceHeaders });
+  assert(finalState, 'The final conflict state was not loaded.');
   assert(finalState.status === 'resolved', `Expected resolved, received ${finalState.status}.`);
   const verdict = await json(origin, `/conflicts/${conflict.id}/verdict`, {
     headers: aliceHeaders,
@@ -335,13 +388,14 @@ async function main() {
   assert(actions.length === 6, `Expected six debate actions, received ${actions.length}.`);
 
   process.stdout.write(
-    `${JSON.stringify({ passed: true, clients: 2, private_briefs_verified: 2, debate_turns: 6, final_status: finalState.status, judge: 'mock' }, null, 2)}\n`,
+    `${JSON.stringify({ passed: true, runners: 2, server_triggered: true, offline_queue_recovered: true, private_briefs_verified: 2, debate_turns: 6, final_status: finalState.status, judge: 'mock' }, null, 2)}\n`,
   );
 }
 
 try {
   await main();
 } finally {
+  await stopRunners();
   await stopWorker();
   rmSync(temporaryRoot, { recursive: true, force: true });
 }

@@ -8,6 +8,7 @@
   },
   "files": [
     "scripts/resolveroom-agent.mjs",
+    "scripts/resolveroom-runner.mjs",
     "README.md"
   ],
   "engines": {
@@ -45,11 +46,13 @@
   },
   "dependencies": {
     "@hono/zod-openapi": "^1.6.1",
+    "@openai/codex-sdk": "^0.149.1",
     "hono": "^4.9.6",
     "lucide-react": "^0.468.0",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
     "react-router-dom": "^7.9.1",
+    "ws": "^8.21.3",
     "zod": "^4.1.11"
   },
   "devDependencies": {
@@ -58,12 +61,14 @@
     "@eslint/js": "^9.35.0",
     "@playwright/test": "^1.55.0",
     "@remotion/cli": "^4.0.516",
+    "@remotion/media": "^4.0.516",
     "@remotion/transitions": "^4.0.516",
     "@testing-library/jest-dom": "^6.8.0",
     "@testing-library/react": "^16.3.0",
     "@types/node": "^24.3.1",
     "@types/react": "^19.1.13",
     "@types/react-dom": "^19.1.9",
+    "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "^5.1.1",
     "@vitest/coverage-v8": "^3.2.4",
     "concurrently": "^9.2.1",

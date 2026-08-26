@@ -6,9 +6,12 @@ import {
   Clock3,
   Code2,
   Copy,
+  CircleAlert,
   KeyRound,
   LockKeyhole,
   Plus,
+  Radio,
+  RefreshCw,
   ShieldCheck,
   Sparkles,
   Trash2,
@@ -683,6 +686,8 @@ export function AgentsPage() {
       .catch((e) => setError(e.message));
   useEffect(() => {
     void load();
+    const interval = window.setInterval(() => void load(), 10_000);
+    return () => window.clearInterval(interval);
   }, []);
   const create = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -761,6 +766,7 @@ export function AgentsPage() {
                   </div>
                   <h2>{agent.name}</h2>
                   <p>Created {relativeTime(agent.createdAt)}</p>
+                  <RunnerSummary runner={agent.runner} activeConflict={agent.active_conflict} />
                 </div>
                 <details className="agent-actions developer-options">
                   <summary>Developer options</summary>
@@ -863,6 +869,63 @@ export function AgentsPage() {
         />
       </main>
     </AppShell>
+  );
+}
+
+function RunnerSummary({ runner, activeConflict }: { runner: any; activeConflict: any }) {
+  const state = runner?.state ?? 'reconnect_required';
+  const working = state === 'working';
+  const online = state === 'online' || working;
+  const reconnecting = state === 'reconnecting';
+  return (
+    <div className={`runner-summary ${state}`} aria-live="polite">
+      <div className="runner-summary-heading">
+        <span className="runner-state-icon" aria-hidden="true">
+          {online ? <Radio /> : reconnecting ? <RefreshCw className="spin" /> : <CircleAlert />}
+        </span>
+        <span>
+          <strong>
+            {working
+              ? 'Runner working'
+              : online
+                ? 'Runner online'
+                : reconnecting
+                  ? 'Runner reconnecting'
+                  : 'Runner reconnect required'}
+          </strong>
+          <small>
+            {working
+              ? 'Securely preparing an authorized turn.'
+              : online
+                ? 'Automatic turns are enabled.'
+                : reconnecting
+                  ? 'It is retrying automatically. No action is needed yet.'
+                  : runner?.last_seen_at
+                    ? `Last seen ${relativeTime(runner.last_seen_at)}.`
+                    : 'This Agent identity has not connected a live Runner yet.'}
+          </small>
+        </span>
+      </div>
+      <dl className="runner-facts">
+        <div>
+          <dt>Device</dt>
+          <dd>{runner?.device_name ?? 'Not reported'}</dd>
+        </div>
+        <div>
+          <dt>Provider</dt>
+          <dd>{runner?.provider === 'codex' ? 'Local Codex' : (runner?.provider ?? 'Unknown')}</dd>
+        </div>
+      </dl>
+      {!online && !reconnecting && (
+        <p className="runner-recovery">
+          {activeConflict ? (
+            <Link to={`/conflicts/${activeConflict.id}`}>Open conflict and reconnect Runner →</Link>
+          ) : (
+            'Assign this Agent to a conflict to generate a fresh one-time reconnect instruction.'
+          )}
+        </p>
+      )}
+    </div>
   );
 }
 
