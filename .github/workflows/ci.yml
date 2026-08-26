@@ -41,6 +41,9 @@ jobs:
       - name: Run static, unit, integration, and build gates
         run: npm run check
 
+      - name: Run real two-client Agent debate gate
+        run: npm run test:agent-e2e
+
       - name: Run browser and accessibility gates
         run: npm run test:e2e
 

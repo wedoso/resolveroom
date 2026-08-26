@@ -109,11 +109,14 @@ Wrangler variables used in production belong in `wrangler.toml`; secrets must be
 
 ```bash
 npm run check
+npm run test:agent-e2e
 npm run test:e2e
 npm audit --audit-level=high
 ```
 
 `npm run check` runs formatting, lint, TypeScript, unit/integration tests, and a production Vite build. The Playwright suite runs the critical product path in desktop Chromium and mobile WebKit, including automated accessibility checks.
+
+`npm run test:agent-e2e` starts an isolated local Worker with real D1 and Durable Object bindings, pairs two independent CLI clients through single-use codes, verifies each private brief is isolated, follows all six server-authorized debate turns, and requires a resolved mock-Judge result. Temporary credentials and local database state are deleted when the gate exits.
 
 The automated acceptance coverage includes:
 

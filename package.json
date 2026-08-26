@@ -27,6 +27,7 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "test:e2e": "playwright test",
+    "test:agent-e2e": "npm run build && node scripts/local-agent-e2e.mjs",
     "db:migrate:local": "wrangler d1 migrations apply resolveroom --local",
     "db:migrate:remote": "npm run deploy:config && wrangler d1 migrations apply resolveroom --remote --config wrangler.deploy.toml",
     "seed": "tsx scripts/seed.ts",

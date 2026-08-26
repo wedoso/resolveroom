@@ -227,9 +227,10 @@ export default {
         return env.CONFLICT_ROOMS.get(id).fetch(request);
       }
     }
-    const coordinated = url.pathname.match(
-      /^\/api\/v1\/conflicts\/([^/]+)\/(ready|pause|resume|cancel|concede|actions|judge|stream|agent(?:\/pairings)?|brief|invite)$/,
-    );
+    // Every conflict-scoped request must observe the same coordination boundary. Splitting reads
+    // (conflict, events) from writes and private reads (actions, brief) can expose different D1
+    // consistency views immediately after pairing, which looks like a valid task followed by a 404.
+    const coordinated = url.pathname.match(/^\/api\/v1\/conflicts\/([^/]+)(?:\/|$)/);
     if (coordinated) {
       const id = env.CONFLICT_ROOMS.idFromName(coordinated[1]);
       return env.CONFLICT_ROOMS.get(id).fetch(request);

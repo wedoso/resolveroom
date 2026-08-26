@@ -66,6 +66,7 @@ jobs:
       - name: Run release gates
         run: |
           npm run check
+          npm run test:agent-e2e
           npm run test:e2e
           npm audit --audit-level=high
 

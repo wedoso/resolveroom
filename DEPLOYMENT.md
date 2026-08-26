@@ -81,6 +81,7 @@ From a clean checkout:
 npm ci
 npx playwright install chromium webkit
 npm run check
+npm run test:agent-e2e
 npm run test:e2e
 npm audit --audit-level=high
 npm run db:migrate:remote

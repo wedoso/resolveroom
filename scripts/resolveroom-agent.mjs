@@ -9,6 +9,7 @@ import process from 'node:process';
 
 const defaultUrl = 'https://resolveroom.wedosodavid.workers.dev';
 const keychainService = 'ResolveRoom Agent Credential';
+const useFileCredentialStore = process.env.RESOLVEROOM_CREDENTIAL_STORE === 'file';
 const rawArguments = process.argv.slice(2);
 let configuredUrl = process.env.RESOLVEROOM_URL ?? defaultUrl;
 const originIndex = rawArguments.indexOf('--origin');
@@ -40,7 +41,7 @@ function fileToken() {
 }
 
 function keychainToken() {
-  if (process.platform !== 'darwin') return undefined;
+  if (process.platform !== 'darwin' || useFileCredentialStore) return undefined;
   try {
     return execFileSync(
       'security',
@@ -53,7 +54,7 @@ function keychainToken() {
 }
 
 function storeCredential(token) {
-  if (process.platform === 'darwin') {
+  if (process.platform === 'darwin' && !useFileCredentialStore) {
     execFileSync(
       'security',
       ['add-generic-password', '-U', '-a', baseUrl, '-s', keychainService, '-w', token],
@@ -83,6 +84,13 @@ function agentToken() {
   return token;
 }
 
+class ResolveRoomHttpError extends Error {
+  constructor(status, body) {
+    super(`ResolveRoom returned ${status}: ${body}`);
+    this.status = status;
+  }
+}
+
 async function request(path, init = {}, authenticated = true) {
   const headers = {
     'content-type': 'application/json',
@@ -91,8 +99,30 @@ async function request(path, init = {}, authenticated = true) {
   };
   const response = await fetch(`${baseUrl}/api/v1${path}`, { ...init, headers });
   const body = await response.text();
-  if (!response.ok) throw new Error(`ResolveRoom returned ${response.status}: ${body}`);
+  if (!response.ok) throw new ResolveRoomHttpError(response.status, body);
   return body ? JSON.parse(body) : null;
+}
+
+async function requestWithConsistencyRetry(path) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await request(path);
+    } catch (error) {
+      if (!(error instanceof ResolveRoomHttpError) || error.status !== 404 || attempt >= 4)
+        throw error;
+      await new Promise((resolve) => setTimeout(resolve, 150 * 2 ** attempt));
+    }
+  }
+}
+
+async function waitForAssignedTask(conflictId) {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const tasks = await request('/agent/tasks');
+    const task = tasks?.tasks?.find((candidate) => candidate.conflict_id === conflictId);
+    if (task) return { tasks, task };
+    if (attempt < 4) await new Promise((resolve) => setTimeout(resolve, 150 * 2 ** attempt));
+  }
+  return { tasks: await request('/agent/tasks'), task: null };
 }
 
 async function readStdin() {
@@ -136,9 +166,8 @@ switch (command) {
     if (!result?.credential?.startsWith('rr_agent_'))
       throw new Error('ResolveRoom did not return a valid Agent credential.');
     const storedIn = storeCredential(result.credential);
-    const tasks = await request('/agent/tasks');
-    const assigned = tasks?.tasks?.some((task) => task.conflict_id === result.conflict_id);
-    if (!assigned)
+    const assignment = await waitForAssignedTask(result.conflict_id);
+    if (!assignment.task)
       throw new Error(
         'The credential was stored securely, but ResolveRoom did not confirm the conflict assignment. Generate a fresh pairing instruction from the conflict room and reconnect.',
       );
@@ -177,14 +206,18 @@ switch (command) {
   case 'context': {
     const [conflictId] = args;
     if (!conflictId) throw new Error('context requires a conflict ID.');
-    const [tasks, conflict, events, brief] = await Promise.all([
-      request('/agent/tasks'),
-      request(`/conflicts/${conflictId}`),
-      request(`/conflicts/${conflictId}/events`),
-      request(`/conflicts/${conflictId}/brief`),
+    const { task } = await waitForAssignedTask(conflictId);
+    if (!task)
+      throw new Error(
+        `Conflict ${conflictId} is not assigned to this Agent. Run resolveroom tasks and use the exact conflict_id returned there.`,
+      );
+    const [conflict, events, brief] = await Promise.all([
+      requestWithConsistencyRetry(`/conflicts/${conflictId}`),
+      requestWithConsistencyRetry(`/conflicts/${conflictId}/events`),
+      requestWithConsistencyRetry(`/conflicts/${conflictId}/brief`),
     ]);
     print({
-      task: tasks.tasks.find((task) => task.conflict_id === conflictId) ?? null,
+      task,
       conflict,
       events,
       private_brief: brief,
@@ -205,7 +238,7 @@ switch (command) {
           action_type: actionType,
           content,
           client_request_id: suppliedRequestId || `codex-${randomUUID()}`,
-          metadata: { client: 'resolveroom-cli', version: '1.1' },
+          metadata: { client: 'resolveroom-cli', version: '1.2' },
         }),
       }),
     );
