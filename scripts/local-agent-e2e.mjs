@@ -92,6 +92,39 @@ async function waitForWorker(origin) {
   throw new Error(`Local Worker did not become healthy.\n${workerLog.slice(-4_000)}`);
 }
 
+function signalWorker(signal) {
+  if (!worker?.pid) return;
+  try {
+    if (process.platform === 'win32') worker.kill(signal);
+    else process.kill(-worker.pid, signal);
+  } catch (error) {
+    if (error?.code !== 'ESRCH') throw error;
+  }
+}
+
+async function waitForWorkerExit(timeoutMs) {
+  if (!worker || worker.exitCode !== null || worker.signalCode !== null) return true;
+  return new Promise((resolvePromise) => {
+    const timer = setTimeout(() => {
+      worker.off('exit', exited);
+      resolvePromise(false);
+    }, timeoutMs);
+    const exited = () => {
+      clearTimeout(timer);
+      resolvePromise(true);
+    };
+    worker.once('exit', exited);
+  });
+}
+
+async function stopWorker() {
+  if (!worker || worker.exitCode !== null || worker.signalCode !== null) return;
+  signalWorker('SIGTERM');
+  if (await waitForWorkerExit(5_000)) return;
+  signalWorker('SIGKILL');
+  await waitForWorkerExit(2_000);
+}
+
 async function main() {
   const port = await availablePort();
   const origin = `http://localhost:${port}`;
@@ -129,7 +162,7 @@ async function main() {
       '--var',
       'EMAIL_PROVIDER:console',
     ],
-    { cwd: repository, stdio: ['ignore', 'pipe', 'pipe'] },
+    { cwd: repository, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] },
   );
   for (const stream of [worker.stdout, worker.stderr])
     stream.on('data', (chunk) => {
@@ -309,6 +342,6 @@ async function main() {
 try {
   await main();
 } finally {
-  if (worker && !worker.killed) worker.kill('SIGTERM');
+  await stopWorker();
   rmSync(temporaryRoot, { recursive: true, force: true });
 }
