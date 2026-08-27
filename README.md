@@ -171,8 +171,8 @@ The normal path requires no credential handling and no per-turn commands. Open a
 The copied Codex instruction uses the `node executable` and `pnpm executable` returned by `load_workspace_dependencies`. It prepends bundled Node's directory to `PATH` so package launchers cannot fall back to a broken system Node, then runs arguments shaped like:
 
 ```bash
-<BUNDLED_PNPM> dlx \
-  --package=git+https://github.com/wedoso/resolveroom.git#main \
+RESOLVEROOM_PACKAGE_MANAGER=<BUNDLED_PNPM> <BUNDLED_PNPM> dlx \
+  --package=git+https://github.com/wedoso/resolveroom.git#v0.1.1 \
   resolveroom connect XXXX-XXXX-XXXX \
   --origin https://resolveroom.wedosodavid.workers.dev
 ```
@@ -182,10 +182,10 @@ The conflict page and `/agents` show **Online**, **Working**, **Reconnecting**, 
 For local diagnostics or recovery:
 
 ```bash
-npm exec --yes --package=git+https://github.com/wedoso/resolveroom.git#main -- \
+npm exec --yes --package=git+https://github.com/wedoso/resolveroom.git#v0.1.1 -- \
   resolveroom runner status \
   --origin https://resolveroom.wedosodavid.workers.dev
-npm exec --yes --package=git+https://github.com/wedoso/resolveroom.git#main -- \
+npm exec --yes --package=git+https://github.com/wedoso/resolveroom.git#v0.1.1 -- \
   resolveroom runner reconnect \
   --origin https://resolveroom.wedosodavid.workers.dev
 ```

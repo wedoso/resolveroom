@@ -181,14 +181,18 @@ const [command, ...args] = rawArguments;
 
 switch (command) {
   case 'connect': {
+    const runnerModule = await import('./resolveroom-runner.mjs');
+    const mainScript = fileURLToPath(import.meta.url);
+    const runnerScript = fileURLToPath(new URL('./resolveroom-runner.mjs', import.meta.url));
+    const prepared = runnerModule.prepareRunnerInstall({ mainScript, runnerScript });
     const { result, storedIn } = await exchangePairing(args[0]);
-    const { installRunner, waitUntilOnline } = await import('./resolveroom-runner.mjs');
-    const installed = installRunner({
+    const installed = runnerModule.installRunner({
       baseUrl,
-      mainScript: fileURLToPath(import.meta.url),
-      runnerScript: fileURLToPath(new URL('./resolveroom-runner.mjs', import.meta.url)),
+      mainScript,
+      runnerScript,
+      prepared,
     });
-    const runner = await waitUntilOnline((path, init) => request(path, init));
+    const runner = await runnerModule.waitUntilOnline((path, init) => request(path, init));
     print({
       connected: true,
       runner_online: true,

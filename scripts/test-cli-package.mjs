@@ -68,7 +68,9 @@ try {
     'scripts',
     'resolveroom-runner.mjs',
   );
-  const { runnerDependencyInstallInvocation } = await import(pathToFileURL(installedRunner).href);
+  const { resolveRunnerPackageManagerPath, runnerDependencyInstallInvocation } = await import(
+    pathToFileURL(installedRunner).href
+  );
   const npmInvocation = runnerDependencyInstallInvocation({
     packageManagerPath: npmCli,
     userAgent: 'npm/11.0.0 node/v22.0.0',
@@ -86,6 +88,22 @@ try {
   });
   if (pnpmInvocation.command !== bundledPnpm || !pnpmInvocation.args.includes('--prod'))
     throw new Error('The Runner did not recognize the Codex-bundled pnpm executable.');
+
+  const bundledDependencies = join(root, 'bundled-runtime', 'dependencies');
+  const bundledNode = join(bundledDependencies, 'node', 'bin', 'node');
+  const discoveredPnpm = join(bundledDependencies, 'bin', 'fallback', 'pnpm');
+  mkdirSync(join(bundledDependencies, 'node', 'bin'), { recursive: true });
+  mkdirSync(join(bundledDependencies, 'bin', 'fallback'), { recursive: true });
+  writeFileSync(bundledNode, '', { mode: 0o700 });
+  writeFileSync(discoveredPnpm, '#!/usr/bin/env sh\nexit 0\n', { mode: 0o700 });
+  const resolvedPnpm = resolveRunnerPackageManagerPath({
+    configuredPath: '',
+    npmExecPath: '',
+    nodeExecutable: bundledNode,
+    platform: 'darwin',
+  });
+  if (resolvedPnpm !== discoveredPnpm)
+    throw new Error('The Runner could not discover pnpm beside the Codex-bundled Node runtime.');
   process.stdout.write(
     'Packed CLI starts without Runner-only dependencies and supports bundled pnpm.\n',
   );

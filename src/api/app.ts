@@ -74,7 +74,7 @@ const disconnectedRunnerStatus = (): RunnerStatus => ({
   reconnect_reason: 'runner_not_connected',
 });
 const limiter = new Map<string, { count: number; reset: number }>();
-const cliPackage = 'git+https://github.com/wedoso/resolveroom.git#main';
+const cliPackage = 'git+https://github.com/wedoso/resolveroom.git#v0.1.1';
 const cliCommand = `npm exec --yes --package=${cliPackage} -- resolveroom`;
 const codexPnpmArguments = `dlx --package=${cliPackage} resolveroom`;
 
@@ -252,7 +252,8 @@ export function createApi(db: Database, options: Options = {}) {
           runtime_tool: 'load_workspace_dependencies',
           node_field: 'node executable',
           package_manager_field: 'pnpm executable',
-          environment: 'Prepend the directory containing the node executable to PATH.',
+          environment:
+            'Prepend the node executable directory to PATH and set RESOLVEROOM_PACKAGE_MANAGER to the pnpm executable.',
           connect_arguments: `${codexPnpmArguments} connect <PAIRING_CODE> --origin ${allowedOrigin}`,
         },
       },
@@ -741,13 +742,14 @@ export function createApi(db: Database, options: Options = {}) {
       {
         pairing: pairingView(pairing),
         code,
-        instruction: `Connect this computer's Codex to ResolveRoom for “${conflict.title}”. Before running a command, call Codex's \`load_workspace_dependencies\` tool. Prepend the directory containing its returned \`node executable\` to PATH, then use its returned \`pnpm executable\` to run these arguments exactly once: \`${codexArguments}\`. Do not use the system Node.js, npm, or npx. Keeping bundled Node first in PATH is required because package launchers may resolve \`node\` by name. The installer copies the working bundled runtime into a private ResolveRoom Runner, stores the credential securely, and enables automatic later turns. Protect the private brief and never print or reveal the stored credential. If the bundled runtime tool is unavailable, stop and report that condition without consuming the pairing code.`,
+        instruction: `Connect this computer's Codex to ResolveRoom for “${conflict.title}”. Before running a command, call Codex's \`load_workspace_dependencies\` tool. Prepend the directory containing its returned \`node executable\` to PATH, set \`RESOLVEROOM_PACKAGE_MANAGER\` to its returned \`pnpm executable\`, then use that pnpm executable to run these arguments exactly once: \`${codexArguments}\`. Do not use the system Node.js, npm, or npx. The installer validates and installs the self-contained Runner before consuming the pairing code, copies the working bundled runtime into its private directory, stores the credential securely, and enables automatic later turns. Protect the private brief and never print or reveal the stored credential. If the bundled runtime tool is unavailable, stop and report that condition without consuming the pairing code.`,
         command,
         codex_runtime: {
           tool: 'load_workspace_dependencies',
           node_field: 'node executable',
           executable_field: 'pnpm executable',
           path_rule: 'Prepend the directory containing the node executable to PATH.',
+          package_manager_environment_variable: 'RESOLVEROOM_PACKAGE_MANAGER',
           arguments: codexArguments,
         },
         agent: { id: ag.id, name: ag.name },

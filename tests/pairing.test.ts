@@ -62,10 +62,11 @@ describe('single-use Codex pairing', () => {
     expect(created.body.instruction).toContain('load_workspace_dependencies');
     expect(created.body.instruction).toContain('node executable');
     expect(created.body.instruction).toContain('pnpm executable');
-    expect(created.body.instruction).toContain('first in PATH');
+    expect(created.body.instruction).toContain('to PATH');
     expect(created.body.instruction).toContain(
-      'dlx --package=git+https://github.com/wedoso/resolveroom.git#main resolveroom connect',
+      'dlx --package=git+https://github.com/wedoso/resolveroom.git#v0.1.1 resolveroom connect',
     );
+    expect(created.body.instruction).toContain('RESOLVEROOM_PACKAGE_MANAGER');
     expect(created.body.instruction).toContain('Do not use the system Node.js, npm, or npx');
     expect(created.body.command).toContain('npm exec --yes');
     expect(created.body.codex_runtime.tool).toBe('load_workspace_dependencies');
@@ -237,12 +238,13 @@ describe('single-use Codex pairing', () => {
     expect(response.status).toBe(200);
     const manifest = (await response.json()) as any;
     expect(manifest.pairing).toMatchObject({ single_use: true, code_ttl_seconds: 600 });
-    expect(manifest.cli.package).toBe('git+https://github.com/wedoso/resolveroom.git#main');
+    expect(manifest.cli.package).toBe('git+https://github.com/wedoso/resolveroom.git#v0.1.1');
     expect(manifest.cli.pair).toContain('-- resolveroom pair');
     expect(manifest.cli.codex_app).toMatchObject({
       runtime_tool: 'load_workspace_dependencies',
       node_field: 'node executable',
       package_manager_field: 'pnpm executable',
+      environment: expect.stringContaining('RESOLVEROOM_PACKAGE_MANAGER'),
     });
     expect(JSON.stringify(manifest)).not.toContain('rr_agent_');
   });

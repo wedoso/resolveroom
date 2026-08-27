@@ -12,8 +12,8 @@
 指令会让 Codex 把 `load_workspace_dependencies` 返回的 `node executable` 所在目录放到 `PATH` 最前面，再使用返回的 `pnpm executable`。这样 pnpm 下载的软件包也不会回退到损坏的系统 Node.js。参数类似：
 
 ```bash
-<BUNDLED_PNPM> dlx \
-  --package=git+https://github.com/wedoso/resolveroom.git#main \
+RESOLVEROOM_PACKAGE_MANAGER=<BUNDLED_PNPM> <BUNDLED_PNPM> dlx \
+  --package=git+https://github.com/wedoso/resolveroom.git#v0.1.1 \
   resolveroom connect XXXX-XXXX-XXXX \
   --origin https://resolveroom.wedosodavid.workers.dev
 ```
@@ -51,10 +51,10 @@ Agents 页面和 conflict 右侧状态卡会显示：
 也可以在本机检查或重启已有配置：
 
 ```bash
-npm exec --yes --package=git+https://github.com/wedoso/resolveroom.git#main -- \
+npm exec --yes --package=git+https://github.com/wedoso/resolveroom.git#v0.1.1 -- \
   resolveroom runner status \
   --origin https://resolveroom.wedosodavid.workers.dev
-npm exec --yes --package=git+https://github.com/wedoso/resolveroom.git#main -- \
+npm exec --yes --package=git+https://github.com/wedoso/resolveroom.git#v0.1.1 -- \
   resolveroom runner reconnect \
   --origin https://resolveroom.wedosodavid.workers.dev
 ```
@@ -66,17 +66,17 @@ npm exec --yes --package=git+https://github.com/wedoso/resolveroom.git#main -- \
 CLI 仍提供以下底层命令：
 
 ```bash
-npm exec --yes --package=git+https://github.com/wedoso/resolveroom.git#main -- \
+npm exec --yes --package=git+https://github.com/wedoso/resolveroom.git#v0.1.1 -- \
   resolveroom tasks \
   --origin https://resolveroom.wedosodavid.workers.dev
-npm exec --yes --package=git+https://github.com/wedoso/resolveroom.git#main -- \
+npm exec --yes --package=git+https://github.com/wedoso/resolveroom.git#v0.1.1 -- \
   resolveroom wait 3600 \
   --origin https://resolveroom.wedosodavid.workers.dev
-npm exec --yes --package=git+https://github.com/wedoso/resolveroom.git#main -- \
+npm exec --yes --package=git+https://github.com/wedoso/resolveroom.git#v0.1.1 -- \
   resolveroom context <conflict-id> \
   --origin https://resolveroom.wedosodavid.workers.dev
 printf '%s' '<response>' | npm exec --yes \
-  --package=git+https://github.com/wedoso/resolveroom.git#main -- \
+  --package=git+https://github.com/wedoso/resolveroom.git#v0.1.1 -- \
   resolveroom act <conflict-id> <allowed-action> <stable-request-id> \
   --origin https://resolveroom.wedosodavid.workers.dev
 ```

@@ -9,10 +9,10 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { homedir, hostname } from 'node:os';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import process from 'node:process';
 
-const runnerVersion = '2.1.0';
+const runnerVersion = '2.2.0';
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
@@ -304,8 +304,26 @@ function xml(value) {
     .replaceAll('"', '&quot;');
 }
 
+export function resolveRunnerPackageManagerPath({
+  configuredPath = process.env.RESOLVEROOM_PACKAGE_MANAGER,
+  npmExecPath = process.env.npm_execpath,
+  nodeExecutable = process.execPath,
+  platform = process.platform,
+} = {}) {
+  const executableNames = platform === 'win32' ? ['pnpm.cmd', 'pnpm.exe', 'pnpm'] : ['pnpm'];
+  const nodeDirectory = dirname(nodeExecutable);
+  const candidates = [configuredPath, npmExecPath];
+  for (const executableName of executableNames) {
+    candidates.push(
+      resolve(nodeDirectory, '..', '..', 'bin', 'fallback', executableName),
+      resolve(nodeDirectory, '..', 'bin', 'fallback', executableName),
+    );
+  }
+  return candidates.find((candidate) => candidate && existsSync(candidate));
+}
+
 export function runnerDependencyInstallInvocation({
-  packageManagerPath = process.env.npm_execpath,
+  packageManagerPath = resolveRunnerPackageManagerPath(),
   userAgent = process.env.npm_config_user_agent ?? '',
   nodeExecutable = process.execPath,
 } = {}) {
@@ -375,8 +393,7 @@ function serviceId(baseUrl) {
   return createHash('sha256').update(baseUrl).digest('hex').slice(0, 12);
 }
 
-export function installRunner({ baseUrl, mainScript, runnerScript }) {
-  const root = runnerRoot();
+export function prepareRunnerInstall({ mainScript, runnerScript, root = runnerRoot() }) {
   mkdirSync(root, { recursive: true, mode: 0o700 });
   const installedMain = join(root, 'resolveroom-agent.mjs');
   const installedRunner = join(root, 'resolveroom-runner.mjs');
@@ -384,6 +401,13 @@ export function installRunner({ baseUrl, mainScript, runnerScript }) {
   copyFileSync(runnerScript, installedRunner);
   installRunnerDependencies(root);
   const installedNode = installRuntime(root);
+  return { root, installedMain, installedRunner, installedNode };
+}
+
+export function installRunner({ baseUrl, mainScript, runnerScript, prepared }) {
+  const installation =
+    prepared ?? prepareRunnerInstall({ mainScript, runnerScript, root: runnerRoot() });
+  const { root, installedMain, installedNode } = installation;
   const logPath = join(root, 'runner.log');
 
   if (process.platform === 'darwin') {
