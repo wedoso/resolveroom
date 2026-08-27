@@ -67,7 +67,11 @@ describe('single-use Codex pairing', () => {
       'dlx --package=git+https://github.com/wedoso/resolveroom.git#v0.1.1 resolveroom connect',
     );
     expect(created.body.instruction).toContain('RESOLVEROOM_PACKAGE_MANAGER');
-    expect(created.body.instruction).toContain('Do not use the system Node.js, npm, or npx');
+    expect(created.body.instruction).toContain('XDG_CACHE_HOME');
+    expect(created.body.instruction).toContain('npm_config_cache');
+    expect(created.body.instruction).toContain('PNPM_HOME');
+    expect(created.body.instruction).toContain("user's existing pnpm cache");
+    expect(created.body.instruction).toContain('Do not use the system Node.js, npm, npx');
     expect(created.body.command).toContain('npm exec --yes');
     expect(created.body.codex_runtime.tool).toBe('load_workspace_dependencies');
     expect(created.body.instruction).not.toContain('rr_agent_');
@@ -246,6 +250,7 @@ describe('single-use Codex pairing', () => {
       package_manager_field: 'pnpm executable',
       environment: expect.stringContaining('RESOLVEROOM_PACKAGE_MANAGER'),
     });
+    expect(manifest.cli.codex_app.environment).toContain('XDG_CACHE_HOME');
     expect(JSON.stringify(manifest)).not.toContain('rr_agent_');
   });
 });

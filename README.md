@@ -168,10 +168,14 @@ The source composition lives in `media/remotion`; the screenshots, preview frame
 
 The normal path requires no credential handling and no per-turn commands. Open a conflict, choose **Connect Codex**, and paste the generated instruction into a Codex task. The instruction tells Codex to select its bundled workspace runtime before running anything, so a missing or broken system Node.js installation cannot block pairing. ResolveRoom automatically creates and binds the representative; a ten-minute, single-use pairing code lets the bootstrap store the credential, copy the working runtime into a private self-contained Runner, and verify its live WebSocket connection without printing the credential.
 
-The copied Codex instruction uses the `node executable` and `pnpm executable` returned by `load_workspace_dependencies`. It prepends bundled Node's directory to `PATH` so package launchers cannot fall back to a broken system Node, then runs arguments shaped like:
+The copied Codex instruction uses the `node executable` and `pnpm executable` returned by `load_workspace_dependencies`. It creates a private directory in the system temp location and redirects `XDG_CACHE_HOME`, `npm_config_cache`, and `PNPM_HOME` there, so a missing, read-only, or root-owned user pnpm cache cannot block the bootstrap. It also prepends bundled Node's directory to `PATH` so package launchers cannot fall back to a broken system Node, then runs arguments shaped like:
 
 ```bash
-RESOLVEROOM_PACKAGE_MANAGER=<BUNDLED_PNPM> <BUNDLED_PNPM> dlx \
+XDG_CACHE_HOME=<PRIVATE_TEMP>/cache \
+  npm_config_cache=<PRIVATE_TEMP>/npm-cache \
+  PNPM_HOME=<PRIVATE_TEMP>/pnpm-home \
+  RESOLVEROOM_PACKAGE_MANAGER=<BUNDLED_PNPM> \
+  <BUNDLED_PNPM> dlx \
   --package=git+https://github.com/wedoso/resolveroom.git#v0.1.1 \
   resolveroom connect XXXX-XXXX-XXXX \
   --origin https://resolveroom.wedosodavid.workers.dev

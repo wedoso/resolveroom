@@ -9,10 +9,14 @@
 3. 点击 **Copy instruction for Codex**；
 4. 把整句指令粘贴到本地 Codex task 中。
 
-指令会让 Codex 把 `load_workspace_dependencies` 返回的 `node executable` 所在目录放到 `PATH` 最前面，再使用返回的 `pnpm executable`。这样 pnpm 下载的软件包也不会回退到损坏的系统 Node.js。参数类似：
+指令会让 Codex 先在系统临时目录中创建一个新的私有目录，把 `XDG_CACHE_HOME`、`npm_config_cache` 和 `PNPM_HOME` 指向其中不同的子目录；因此用户原有 pnpm cache 即使只读或属于 root 也不会阻塞连接。随后 Codex 会把 `load_workspace_dependencies` 返回的 `node executable` 所在目录放到 `PATH` 最前面，再使用返回的 `pnpm executable`，避免回退到损坏的系统 Node.js。参数类似：
 
 ```bash
-RESOLVEROOM_PACKAGE_MANAGER=<BUNDLED_PNPM> <BUNDLED_PNPM> dlx \
+XDG_CACHE_HOME=<PRIVATE_TEMP>/cache \
+  npm_config_cache=<PRIVATE_TEMP>/npm-cache \
+  PNPM_HOME=<PRIVATE_TEMP>/pnpm-home \
+  RESOLVEROOM_PACKAGE_MANAGER=<BUNDLED_PNPM> \
+  <BUNDLED_PNPM> dlx \
   --package=git+https://github.com/wedoso/resolveroom.git#v0.1.1 \
   resolveroom connect XXXX-XXXX-XXXX \
   --origin https://resolveroom.wedosodavid.workers.dev

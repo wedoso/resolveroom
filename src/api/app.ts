@@ -253,7 +253,7 @@ export function createApi(db: Database, options: Options = {}) {
           node_field: 'node executable',
           package_manager_field: 'pnpm executable',
           environment:
-            'Prepend the node executable directory to PATH and set RESOLVEROOM_PACKAGE_MANAGER to the pnpm executable.',
+            'Create a private temporary directory; point XDG_CACHE_HOME, npm_config_cache, and PNPM_HOME inside it; prepend the node executable directory to PATH; and set RESOLVEROOM_PACKAGE_MANAGER to the pnpm executable.',
           connect_arguments: `${codexPnpmArguments} connect <PAIRING_CODE> --origin ${allowedOrigin}`,
         },
       },
@@ -742,7 +742,7 @@ export function createApi(db: Database, options: Options = {}) {
       {
         pairing: pairingView(pairing),
         code,
-        instruction: `Connect this computer's Codex to ResolveRoom for “${conflict.title}”. Before running a command, call Codex's \`load_workspace_dependencies\` tool. Prepend the directory containing its returned \`node executable\` to PATH, set \`RESOLVEROOM_PACKAGE_MANAGER\` to its returned \`pnpm executable\`, then use that pnpm executable to run these arguments exactly once: \`${codexArguments}\`. Do not use the system Node.js, npm, or npx. The installer validates and installs the self-contained Runner before consuming the pairing code, copies the working bundled runtime into its private directory, stores the credential securely, and enables automatic later turns. Protect the private brief and never print or reveal the stored credential. If the bundled runtime tool is unavailable, stop and report that condition without consuming the pairing code.`,
+        instruction: `Connect this computer's Codex to ResolveRoom for “${conflict.title}”. Before running a command, call Codex's \`load_workspace_dependencies\` tool and create a new private temporary directory in the system temp location. For the same command, set \`XDG_CACHE_HOME\`, \`npm_config_cache\`, and \`PNPM_HOME\` to separate subdirectories inside that temporary directory; prepend the directory containing the returned \`node executable\` to PATH; and set \`RESOLVEROOM_PACKAGE_MANAGER\` to the returned \`pnpm executable\`. Then use that pnpm executable to run these arguments exactly once: \`${codexArguments}\`. Do not use the system Node.js, npm, npx, or the user's existing pnpm cache. The installer validates and installs the self-contained Runner before consuming the pairing code, copies the working bundled runtime into its private directory, stores the credential securely, and enables automatic later turns. Protect the private brief and never print or reveal the stored credential. If the bundled runtime tool or a writable private temporary directory is unavailable, stop and report that condition without consuming the pairing code.`,
         command,
         codex_runtime: {
           tool: 'load_workspace_dependencies',
@@ -750,6 +750,10 @@ export function createApi(db: Database, options: Options = {}) {
           executable_field: 'pnpm executable',
           path_rule: 'Prepend the directory containing the node executable to PATH.',
           package_manager_environment_variable: 'RESOLVEROOM_PACKAGE_MANAGER',
+          private_cache: {
+            location: 'new private directory in the system temp location',
+            environment_variables: ['XDG_CACHE_HOME', 'npm_config_cache', 'PNPM_HOME'],
+          },
           arguments: codexArguments,
         },
         agent: { id: ag.id, name: ag.name },
