@@ -4,8 +4,6 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from
 import { homedir, hostname } from 'node:os';
 import { dirname, join } from 'node:path';
 import process from 'node:process';
-import { Codex } from '@openai/codex-sdk';
-import WebSocket from 'ws';
 
 const runnerVersion = '2.0.0';
 
@@ -85,7 +83,7 @@ Authorized context:
 ${JSON.stringify(context)}`;
 }
 
-function createProvider(providerName) {
+async function createProvider(providerName) {
   if (providerName === 'mock')
     return {
       name: 'mock',
@@ -98,6 +96,7 @@ function createProvider(providerName) {
         return mockResponse(context);
       },
     };
+  const { Codex } = await import('@openai/codex-sdk');
   const codex = new Codex();
   const state = readThreadState();
   return {
@@ -148,9 +147,10 @@ async function contextForTask(request, conflictId) {
 }
 
 export async function startRunner({ baseUrl, token, request, providerName }) {
-  const provider = createProvider(
-    providerName ?? process.env.RESOLVEROOM_RUNNER_PROVIDER ?? 'codex',
-  );
+  const [{ default: WebSocket }, provider] = await Promise.all([
+    import('ws'),
+    createProvider(providerName ?? process.env.RESOLVEROOM_RUNNER_PROVIDER ?? 'codex'),
+  ]);
   const websocketUrl = `${baseUrl.replace(/^http/, 'ws')}/api/v1/agent-runner/connect`;
   let stopped = false;
   let attempt = 0;

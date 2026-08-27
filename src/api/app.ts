@@ -74,6 +74,8 @@ const disconnectedRunnerStatus = (): RunnerStatus => ({
   reconnect_reason: 'runner_not_connected',
 });
 const limiter = new Map<string, { count: number; reset: number }>();
+const cliPackage = 'git+https://github.com/wedoso/resolveroom.git#main';
+const cliCommand = `npm exec --yes --package=${cliPackage} -- resolveroom`;
 
 const jsonBody = async (c: Context) => {
   try {
@@ -241,9 +243,10 @@ export function createApi(db: Database, options: Options = {}) {
         single_use: true,
       },
       cli: {
-        command: 'npx --yes github:wedoso/resolveroom#main',
-        connect: `npx --yes github:wedoso/resolveroom#main connect <PAIRING_CODE> --origin ${allowedOrigin}`,
-        pair: `npx --yes github:wedoso/resolveroom#main pair <PAIRING_CODE> --origin ${allowedOrigin}`,
+        package: cliPackage,
+        command: cliCommand,
+        connect: `${cliCommand} connect <PAIRING_CODE> --origin ${allowedOrigin}`,
+        pair: `${cliCommand} pair <PAIRING_CODE> --origin ${allowedOrigin}`,
       },
       runtime: {
         tasks: `${allowedOrigin}/api/v1/agent/tasks`,
@@ -724,7 +727,7 @@ export function createApi(db: Database, options: Options = {}) {
       createdAt,
     };
     await db.createAgentPairing(pairing);
-    const command = `npx --yes github:wedoso/resolveroom#main connect ${code} --origin ${allowedOrigin}`;
+    const command = `${cliCommand} connect ${code} --origin ${allowedOrigin}`;
     return c.json(
       {
         pairing: pairingView(pairing),

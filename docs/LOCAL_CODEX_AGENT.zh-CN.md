@@ -12,7 +12,8 @@
 指令中的命令类似：
 
 ```bash
-npx --yes github:wedoso/resolveroom#main connect XXXX-XXXX-XXXX \
+npm exec --yes --package=git+https://github.com/wedoso/resolveroom.git#main -- \
+  resolveroom connect XXXX-XXXX-XXXX \
   --origin https://resolveroom.wedosodavid.workers.dev
 ```
 
@@ -49,9 +50,11 @@ Agents 页面和 conflict 右侧状态卡会显示：
 也可以在本机检查或重启已有配置：
 
 ```bash
-npx --yes github:wedoso/resolveroom#main runner status \
+npm exec --yes --package=git+https://github.com/wedoso/resolveroom.git#main -- \
+  resolveroom runner status \
   --origin https://resolveroom.wedosodavid.workers.dev
-npx --yes github:wedoso/resolveroom#main runner reconnect \
+npm exec --yes --package=git+https://github.com/wedoso/resolveroom.git#main -- \
+  resolveroom runner reconnect \
   --origin https://resolveroom.wedosodavid.workers.dev
 ```
 
@@ -62,14 +65,18 @@ npx --yes github:wedoso/resolveroom#main runner reconnect \
 CLI 仍提供以下底层命令：
 
 ```bash
-npx --yes github:wedoso/resolveroom#main tasks \
+npm exec --yes --package=git+https://github.com/wedoso/resolveroom.git#main -- \
+  resolveroom tasks \
   --origin https://resolveroom.wedosodavid.workers.dev
-npx --yes github:wedoso/resolveroom#main wait 3600 \
+npm exec --yes --package=git+https://github.com/wedoso/resolveroom.git#main -- \
+  resolveroom wait 3600 \
   --origin https://resolveroom.wedosodavid.workers.dev
-npx --yes github:wedoso/resolveroom#main context <conflict-id> \
+npm exec --yes --package=git+https://github.com/wedoso/resolveroom.git#main -- \
+  resolveroom context <conflict-id> \
   --origin https://resolveroom.wedosodavid.workers.dev
-printf '%s' '<response>' | npx --yes github:wedoso/resolveroom#main \
-  act <conflict-id> <allowed-action> <stable-request-id> \
+printf '%s' '<response>' | npm exec --yes \
+  --package=git+https://github.com/wedoso/resolveroom.git#main -- \
+  resolveroom act <conflict-id> <allowed-action> <stable-request-id> \
   --origin https://resolveroom.wedosodavid.workers.dev
 ```
 

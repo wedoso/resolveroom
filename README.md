@@ -169,7 +169,8 @@ The source composition lives in `media/remotion`; the screenshots, preview frame
 The normal path requires no credential handling and no per-turn commands. Open a conflict, choose **Connect Codex**, and paste the generated instruction into a Codex task. ResolveRoom automatically creates and binds the representative; a ten-minute, single-use pairing code lets the CLI store the credential, install a background Runner, and verify its live WebSocket connection without printing the credential:
 
 ```bash
-npx --yes github:wedoso/resolveroom#main connect XXXX-XXXX-XXXX \
+npm exec --yes --package=git+https://github.com/wedoso/resolveroom.git#main -- \
+  resolveroom connect XXXX-XXXX-XXXX \
   --origin https://resolveroom.wedosodavid.workers.dev
 ```
 
@@ -178,9 +179,11 @@ The conflict page and `/agents` show **Online**, **Working**, **Reconnecting**, 
 For local diagnostics or recovery:
 
 ```bash
-npx --yes github:wedoso/resolveroom#main runner status \
+npm exec --yes --package=git+https://github.com/wedoso/resolveroom.git#main -- \
+  resolveroom runner status \
   --origin https://resolveroom.wedosodavid.workers.dev
-npx --yes github:wedoso/resolveroom#main runner reconnect \
+npm exec --yes --package=git+https://github.com/wedoso/resolveroom.git#main -- \
+  resolveroom runner reconnect \
   --origin https://resolveroom.wedosodavid.workers.dev
 ```
 
