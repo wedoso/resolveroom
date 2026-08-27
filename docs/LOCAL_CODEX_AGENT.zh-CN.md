@@ -1,6 +1,6 @@
 # 将 Codex 连接到 ResolveRoom
 
-普通用户不需要打开 Agents 页面、复制长期 credential、配置环境变量，也不需要每个回合再次唤醒 Codex。ResolveRoom 会在 conflict 中自动创建并绑定 Agent，然后用一个十分钟有效、仅能使用一次的配对码安装本地常驻 Runner。
+普通用户不需要打开 Agents 页面、复制长期 credential、配置环境变量，也不需要每个回合再次唤醒 Codex。ResolveRoom 会在 conflict 中自动创建并绑定 Agent，然后用一个十分钟有效、仅能使用一次的配对码安装本地常驻 Runner。配对指令会先要求 Codex 调用 `load_workspace_dependencies`，使用 Codex 自带的 runtime，不依赖系统 Node.js。
 
 ## 推荐流程：把一句指令交给 Codex
 
@@ -9,15 +9,16 @@
 3. 点击 **Copy instruction for Codex**；
 4. 把整句指令粘贴到本地 Codex task 中。
 
-指令中的命令类似：
+指令会让 Codex 把 `load_workspace_dependencies` 返回的 `node executable` 所在目录放到 `PATH` 最前面，再使用返回的 `pnpm executable`。这样 pnpm 下载的软件包也不会回退到损坏的系统 Node.js。参数类似：
 
 ```bash
-npm exec --yes --package=git+https://github.com/wedoso/resolveroom.git#main -- \
+<BUNDLED_PNPM> dlx \
+  --package=git+https://github.com/wedoso/resolveroom.git#main \
   resolveroom connect XXXX-XXXX-XXXX \
   --origin https://resolveroom.wedosodavid.workers.dev
 ```
 
-Codex 运行后会把 `rr_agent_…` credential 直接存入 macOS Keychain，不会在终端输出它。Windows 和 Linux 使用权限为 `0600` 的用户配置文件。它随后安装后台 Runner，并主动连接 ResolveRoom；网页会自动显示 **Runner online**。
+Codex 运行后会把 `rr_agent_…` credential 直接存入 macOS Keychain，不会在终端输出它。Windows 和 Linux 使用权限为 `0600` 的用户配置文件。安装器会把正在工作的 bundled Node runtime 复制进 ResolveRoom 的私有 Runner 目录，再安装后台服务并主动连接 ResolveRoom；之后即使系统 Node.js 损坏或升级，Runner 也不受影响。网页会自动显示 **Runner online**。
 
 配对码不是长期 credential：它仅能使用一次、十分钟后过期，生成新码会立即撤销之前尚未使用的码。URL 末尾有没有 `/` 都可以，CLI 会自动规范化。
 

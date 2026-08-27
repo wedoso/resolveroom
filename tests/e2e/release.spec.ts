@@ -178,6 +178,7 @@ test('operational endpoints and browser security policy are deployment-ready', a
 test('landing and conflict creation are polished and functional', async ({ page }) => {
   await page.goto('/');
   await expect(page.getByRole('heading', { name: /Give your side to your agent/ })).toBeVisible();
+  await expect(page.locator('.mini-progress span')).toHaveCount(4);
   await page.getByRole('link', { name: 'Create a conflict', exact: true }).first().click();
   await page.getByLabel('Display name').fill('Alice UI');
   await page.getByLabel('Email address').fill(`alice.ui.${unique()}@example.test`);

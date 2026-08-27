@@ -653,7 +653,7 @@ function AgentCard({
             ? 'ResolveRoom can now push authorized turns to this computer automatically.'
             : pairing?.pairing?.status === 'connected'
               ? 'Authorization succeeded. Waiting for the local background service to report online.'
-              : 'Copy one instruction into a Codex task. It pairs once and installs the background Runner.'
+              : 'Copy one instruction into a Codex task. It uses Codex’s bundled runtime, pairs once, and installs a self-contained background Runner.'
         }
       >
         {pairing && (
@@ -717,7 +717,8 @@ function AgentCard({
                   <ShieldCheck />
                   <p>
                     This code contains no long-lived credential. It works once, expires in ten
-                    minutes, and installs a Runner that reconnects automatically after restarts.
+                    minutes, and installs a self-contained Runner that reconnects automatically
+                    after restarts—even if the system Node.js installation is unavailable.
                   </p>
                 </div>
                 <p className="pairing-waiting">

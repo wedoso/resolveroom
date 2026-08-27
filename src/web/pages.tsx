@@ -192,7 +192,7 @@ function CasePreview({ judgeAvailable }: { judgeAvailable: boolean }) {
         <span className="done">Opening</span>
         <span className="current">Rebuttal</span>
         <span>Closing</span>
-        {judgeAvailable && <span>Verdict</span>}
+        <span>{judgeAvailable ? 'Verdict' : 'Record'}</span>
       </div>
       <div className="preview-record">
         <article className="a">

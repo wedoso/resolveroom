@@ -1,11 +1,18 @@
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs';
 import { homedir, hostname } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import process from 'node:process';
 
-const runnerVersion = '2.0.0';
+const runnerVersion = '2.1.0';
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
@@ -297,7 +304,40 @@ function xml(value) {
     .replaceAll('"', '&quot;');
 }
 
-function installDependencies(root) {
+export function runnerDependencyInstallInvocation({
+  packageManagerPath = process.env.npm_execpath,
+  userAgent = process.env.npm_config_user_agent ?? '',
+  nodeExecutable = process.execPath,
+} = {}) {
+  if (!packageManagerPath || !existsSync(packageManagerPath))
+    throw new Error('A working npm or pnpm executable is required to install the Runner.');
+  const executableName = basename(packageManagerPath).toLowerCase();
+  const pnpm =
+    userAgent.startsWith('pnpm/') || /^pnpm(?:\.c?js|\.cmd|\.exe)?$/.test(executableName);
+  const javascriptCli = /\.(?:c?js|mjs)$/.test(executableName);
+  return pnpm
+    ? {
+        command: javascriptCli ? nodeExecutable : packageManagerPath,
+        args: [
+          ...(javascriptCli ? [packageManagerPath] : []),
+          'install',
+          '--prod',
+          '--no-frozen-lockfile',
+        ],
+      }
+    : {
+        command: javascriptCli ? nodeExecutable : packageManagerPath,
+        args: [
+          ...(javascriptCli ? [packageManagerPath] : []),
+          'install',
+          '--omit=dev',
+          '--no-audit',
+          '--no-fund',
+        ],
+      };
+}
+
+export function installRunnerDependencies(root) {
   const packageJson = {
     private: true,
     type: 'module',
@@ -307,16 +347,28 @@ function installDependencies(root) {
     },
   };
   writeFileSync(join(root, 'package.json'), JSON.stringify(packageJson, null, 2), { mode: 0o600 });
-  const npmCli = process.env.npm_execpath;
-  if (!npmCli || !existsSync(npmCli))
-    throw new Error('npm is required to install the persistent ResolveRoom Runner.');
   const cache = join(root, 'npm-cache');
   mkdirSync(cache, { recursive: true, mode: 0o700 });
-  execFileSync(process.execPath, [npmCli, 'install', '--omit=dev', '--no-audit', '--no-fund'], {
+  const invocation = runnerDependencyInstallInvocation();
+  execFileSync(invocation.command, invocation.args, {
     cwd: root,
-    env: { ...process.env, npm_config_cache: cache },
+    env: {
+      ...process.env,
+      npm_config_cache: cache,
+      XDG_CACHE_HOME: cache,
+      PNPM_HOME: join(root, 'pnpm-home'),
+    },
     stdio: 'ignore',
   });
+}
+
+function installRuntime(root) {
+  const runtimeDirectory = join(root, 'runtime');
+  const installedNode = join(runtimeDirectory, process.platform === 'win32' ? 'node.exe' : 'node');
+  mkdirSync(runtimeDirectory, { recursive: true, mode: 0o700 });
+  if (!existsSync(installedNode)) copyFileSync(process.execPath, installedNode);
+  if (process.platform !== 'win32') chmodSync(installedNode, 0o700);
+  return installedNode;
 }
 
 function serviceId(baseUrl) {
@@ -330,7 +382,8 @@ export function installRunner({ baseUrl, mainScript, runnerScript }) {
   const installedRunner = join(root, 'resolveroom-runner.mjs');
   copyFileSync(mainScript, installedMain);
   copyFileSync(runnerScript, installedRunner);
-  installDependencies(root);
+  installRunnerDependencies(root);
+  const installedNode = installRuntime(root);
   const logPath = join(root, 'runner.log');
 
   if (process.platform === 'darwin') {
@@ -341,7 +394,7 @@ export function installRunner({ baseUrl, mainScript, runnerScript }) {
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>Label</key><string>${xml(label)}</string>
-<key>ProgramArguments</key><array><string>${xml(process.execPath)}</string><string>${xml(installedMain)}</string><string>runner</string><string>start</string><string>--origin</string><string>${xml(baseUrl)}</string></array>
+<key>ProgramArguments</key><array><string>${xml(installedNode)}</string><string>${xml(installedMain)}</string><string>runner</string><string>start</string><string>--origin</string><string>${xml(baseUrl)}</string></array>
 <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
 <key>StandardOutPath</key><string>${xml(logPath)}</string>
 <key>StandardErrorPath</key><string>${xml(logPath)}</string>
@@ -355,7 +408,7 @@ export function installRunner({ baseUrl, mainScript, runnerScript }) {
     }
     execFileSync('launchctl', ['bootstrap', domain, plistPath], { stdio: 'ignore' });
     execFileSync('launchctl', ['enable', `${domain}/${label}`], { stdio: 'ignore' });
-    return { managed: true, service: label, log_path: logPath };
+    return { managed: true, service: label, log_path: logPath, runtime: installedNode };
   }
 
   if (process.platform === 'linux') {
@@ -364,12 +417,12 @@ export function installRunner({ baseUrl, mainScript, runnerScript }) {
     mkdirSync(dirname(unitPath), { recursive: true, mode: 0o700 });
     writeFileSync(
       unitPath,
-      `[Unit]\nDescription=ResolveRoom Agent Runner\nAfter=network-online.target\n\n[Service]\nExecStart=${systemdQuote(process.execPath)} ${systemdQuote(installedMain)} runner start --origin ${systemdQuote(baseUrl)}\nRestart=always\nRestartSec=3\n\n[Install]\nWantedBy=default.target\n`,
+      `[Unit]\nDescription=ResolveRoom Agent Runner\nAfter=network-online.target\n\n[Service]\nExecStart=${systemdQuote(installedNode)} ${systemdQuote(installedMain)} runner start --origin ${systemdQuote(baseUrl)}\nRestart=always\nRestartSec=3\n\n[Install]\nWantedBy=default.target\n`,
       { mode: 0o600 },
     );
     execFileSync('systemctl', ['--user', 'daemon-reload'], { stdio: 'ignore' });
     execFileSync('systemctl', ['--user', 'enable', '--now', unit], { stdio: 'ignore' });
-    return { managed: true, service: unit, log_path: null };
+    return { managed: true, service: unit, log_path: null, runtime: installedNode };
   }
 
   if (process.platform === 'win32') {
@@ -377,7 +430,7 @@ export function installRunner({ baseUrl, mainScript, runnerScript }) {
     const launcher = join(root, `runner-${serviceId(baseUrl)}.cmd`);
     writeFileSync(
       launcher,
-      `@echo off\r\n${cmdQuote(process.execPath)} ${cmdQuote(installedMain)} runner start --origin ${cmdQuote(baseUrl)}\r\n`,
+      `@echo off\r\n${cmdQuote(installedNode)} ${cmdQuote(installedMain)} runner start --origin ${cmdQuote(baseUrl)}\r\n`,
       { mode: 0o600 },
     );
     execFileSync(
@@ -386,15 +439,20 @@ export function installRunner({ baseUrl, mainScript, runnerScript }) {
       { stdio: 'ignore' },
     );
     execFileSync('schtasks.exe', ['/Run', '/TN', task], { stdio: 'ignore' });
-    return { managed: true, service: task, log_path: logPath };
+    return { managed: true, service: task, log_path: logPath, runtime: installedNode };
   }
 
-  const child = spawn(process.execPath, [installedMain, 'runner', 'start', '--origin', baseUrl], {
+  const child = spawn(installedNode, [installedMain, 'runner', 'start', '--origin', baseUrl], {
     detached: true,
     stdio: 'ignore',
   });
   child.unref();
-  return { managed: false, service: `pid:${child.pid}`, log_path: logPath };
+  return {
+    managed: false,
+    service: `pid:${child.pid}`,
+    log_path: logPath,
+    runtime: installedNode,
+  };
 }
 
 function systemdQuote(value) {

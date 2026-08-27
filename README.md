@@ -166,15 +166,18 @@ The source composition lives in `media/remotion`; the screenshots, preview frame
 
 ## External agent integration
 
-The normal path requires no credential handling and no per-turn commands. Open a conflict, choose **Connect Codex**, and paste the generated instruction into a Codex task. ResolveRoom automatically creates and binds the representative; a ten-minute, single-use pairing code lets the CLI store the credential, install a background Runner, and verify its live WebSocket connection without printing the credential:
+The normal path requires no credential handling and no per-turn commands. Open a conflict, choose **Connect Codex**, and paste the generated instruction into a Codex task. The instruction tells Codex to select its bundled workspace runtime before running anything, so a missing or broken system Node.js installation cannot block pairing. ResolveRoom automatically creates and binds the representative; a ten-minute, single-use pairing code lets the bootstrap store the credential, copy the working runtime into a private self-contained Runner, and verify its live WebSocket connection without printing the credential.
+
+The copied Codex instruction uses the `node executable` and `pnpm executable` returned by `load_workspace_dependencies`. It prepends bundled Node's directory to `PATH` so package launchers cannot fall back to a broken system Node, then runs arguments shaped like:
 
 ```bash
-npm exec --yes --package=git+https://github.com/wedoso/resolveroom.git#main -- \
+<BUNDLED_PNPM> dlx \
+  --package=git+https://github.com/wedoso/resolveroom.git#main \
   resolveroom connect XXXX-XXXX-XXXX \
   --origin https://resolveroom.wedosodavid.workers.dev
 ```
 
-The conflict page and `/agents` show **Online**, **Working**, **Reconnecting**, or **Reconnect required**, along with device/provider and last-seen details. Once both parties press Ready, the server dispatches each authorized turn to the correct local Runner; users do not need to reopen Codex or issue another command. If the machine was restarted or the service was removed, use the page's reconnect instruction. Claiming a new pairing code revokes the Agent's previous credentials, disconnects the stale Runner, and leaves only the replacement credential valid. The public discovery document is available at `/.well-known/resolveroom-agent.json`.
+The conflict page and `/agents` show **Online**, **Working**, **Reconnecting**, or **Reconnect required**, along with device/provider and last-seen details. Once both parties press Ready, the server dispatches each authorized turn to the correct local Runner; users do not need to reopen Codex or issue another command. The service runs from its copied private runtime rather than the user's system Node.js. If the machine was restarted or the service was removed, use the page's reconnect instruction. Claiming a new pairing code revokes the Agent's previous credentials, disconnects the stale Runner, and leaves only the replacement credential valid. The public discovery document is available at `/.well-known/resolveroom-agent.json`.
 
 For local diagnostics or recovery:
 

@@ -4,6 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import process from 'node:process';
 
 const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
@@ -59,8 +60,34 @@ try {
   );
   if (!output.includes('ResolveRoom agent CLI'))
     throw new Error('The packed ResolveRoom CLI did not start successfully.');
+
+  const installedRunner = join(
+    consumerDirectory,
+    'node_modules',
+    'resolveroom',
+    'scripts',
+    'resolveroom-runner.mjs',
+  );
+  const { runnerDependencyInstallInvocation } = await import(pathToFileURL(installedRunner).href);
+  const npmInvocation = runnerDependencyInstallInvocation({
+    packageManagerPath: npmCli,
+    userAgent: 'npm/11.0.0 node/v22.0.0',
+    nodeExecutable: process.execPath,
+  });
+  if (npmInvocation.command !== process.execPath || !npmInvocation.args.includes('--omit=dev'))
+    throw new Error('The Runner did not preserve npm installation support.');
+
+  const bundledPnpm = join(root, 'pnpm');
+  writeFileSync(bundledPnpm, '#!/usr/bin/env sh\nexit 0\n', { mode: 0o700 });
+  const pnpmInvocation = runnerDependencyInstallInvocation({
+    packageManagerPath: bundledPnpm,
+    userAgent: 'pnpm/11.0.0 npm/? node/v24.0.0',
+    nodeExecutable: process.execPath,
+  });
+  if (pnpmInvocation.command !== bundledPnpm || !pnpmInvocation.args.includes('--prod'))
+    throw new Error('The Runner did not recognize the Codex-bundled pnpm executable.');
   process.stdout.write(
-    'Packed CLI installs without Runner-only dependencies and starts successfully.\n',
+    'Packed CLI starts without Runner-only dependencies and supports bundled pnpm.\n',
   );
 } finally {
   rmSync(root, { recursive: true, force: true });

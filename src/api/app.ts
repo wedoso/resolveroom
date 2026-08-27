@@ -76,6 +76,7 @@ const disconnectedRunnerStatus = (): RunnerStatus => ({
 const limiter = new Map<string, { count: number; reset: number }>();
 const cliPackage = 'git+https://github.com/wedoso/resolveroom.git#main';
 const cliCommand = `npm exec --yes --package=${cliPackage} -- resolveroom`;
+const codexPnpmArguments = `dlx --package=${cliPackage} resolveroom`;
 
 const jsonBody = async (c: Context) => {
   try {
@@ -247,6 +248,13 @@ export function createApi(db: Database, options: Options = {}) {
         command: cliCommand,
         connect: `${cliCommand} connect <PAIRING_CODE> --origin ${allowedOrigin}`,
         pair: `${cliCommand} pair <PAIRING_CODE> --origin ${allowedOrigin}`,
+        codex_app: {
+          runtime_tool: 'load_workspace_dependencies',
+          node_field: 'node executable',
+          package_manager_field: 'pnpm executable',
+          environment: 'Prepend the directory containing the node executable to PATH.',
+          connect_arguments: `${codexPnpmArguments} connect <PAIRING_CODE> --origin ${allowedOrigin}`,
+        },
       },
       runtime: {
         tasks: `${allowedOrigin}/api/v1/agent/tasks`,
@@ -728,12 +736,20 @@ export function createApi(db: Database, options: Options = {}) {
     };
     await db.createAgentPairing(pairing);
     const command = `${cliCommand} connect ${code} --origin ${allowedOrigin}`;
+    const codexArguments = `${codexPnpmArguments} connect ${code} --origin ${allowedOrigin}`;
     return c.json(
       {
         pairing: pairingView(pairing),
         code,
-        instruction: `Connect this computer's Codex to ResolveRoom for “${conflict.title}”. Run \`${command}\` exactly once. It securely stores the credential and installs an always-on local Runner, so ResolveRoom can trigger later turns automatically. Protect the private brief and never print or reveal the stored credential.`,
+        instruction: `Connect this computer's Codex to ResolveRoom for “${conflict.title}”. Before running a command, call Codex's \`load_workspace_dependencies\` tool. Prepend the directory containing its returned \`node executable\` to PATH, then use its returned \`pnpm executable\` to run these arguments exactly once: \`${codexArguments}\`. Do not use the system Node.js, npm, or npx. Keeping bundled Node first in PATH is required because package launchers may resolve \`node\` by name. The installer copies the working bundled runtime into a private ResolveRoom Runner, stores the credential securely, and enables automatic later turns. Protect the private brief and never print or reveal the stored credential. If the bundled runtime tool is unavailable, stop and report that condition without consuming the pairing code.`,
         command,
+        codex_runtime: {
+          tool: 'load_workspace_dependencies',
+          node_field: 'node executable',
+          executable_field: 'pnpm executable',
+          path_rule: 'Prepend the directory containing the node executable to PATH.',
+          arguments: codexArguments,
+        },
         agent: { id: ag.id, name: ag.name },
         party: { id: party.id, role: party.role, agent_bound: true },
       },

@@ -4,7 +4,7 @@
 
 When the user asks Codex to represent them in ResolveRoom:
 
-1. If the user supplies a ResolveRoom pairing instruction, run its `pair` command exactly once. A pairing code is short-lived and is not the long-term credential.
+1. If the user supplies a ResolveRoom pairing instruction, first call `load_workspace_dependencies`, prepend the directory containing its returned `node executable` to `PATH`, and use its bundled `pnpm executable`; do not use system Node.js, npm, or npx. Run the supplied connection arguments exactly once. A pairing code is short-lived and is not the long-term credential.
 2. Run `npm run agent -- tasks` before taking any action (or use the equivalent `npx ... tasks --origin ...` command outside this repository).
 3. Act only on a task whose `your_turn` is true.
 4. Run `npm run agent -- context <conflict-id>` and use the authorized private brief, public case state, and transcript to prepare the response.
