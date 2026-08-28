@@ -62,6 +62,9 @@ describe('single-use Codex pairing', () => {
     expect(created.body.instruction).toContain('load_workspace_dependencies');
     expect(created.body.instruction).toContain('node executable');
     expect(created.body.instruction).toContain('JSON argument array');
+    expect(created.body.instruction).toContain('sandbox_permissions: "require_escalated"');
+    expect(created.body.instruction).toContain('ENOTFOUND');
+    expect(created.body.instruction).toContain('network_access_required');
     expect(created.body.instruction).toContain('/agent/bootstrap.mjs');
     expect(created.body.instruction).toContain('SHA-256');
     expect(created.body.instruction).toContain('Do not use the system Node.js, npm, npx, pnpm');
@@ -72,6 +75,12 @@ describe('single-use Codex pairing', () => {
     expect(created.body.recovery_instruction).not.toContain(created.body.code);
     expect(created.body.command).toContain('<NODE_EXECUTABLE>');
     expect(created.body.codex_runtime.tool).toBe('load_workspace_dependencies');
+    expect(created.body.codex_runtime.execution).toMatchObject({
+      tool: 'exec_command',
+      sandbox_permissions: 'require_escalated',
+      network_access: 'required',
+      allowed_origin: 'http://resolveroom.test',
+    });
     expect(created.body.codex_runtime.arguments).toContain('connect');
     expect(created.body.codex_runtime.arguments).toContain(created.body.code);
     expect(created.body.codex_runtime.arguments).not.toContain('pnpm');
@@ -245,7 +254,7 @@ describe('single-use Codex pairing', () => {
     expect(manifest.pairing).toMatchObject({ single_use: true, code_ttl_seconds: 600 });
     expect(manifest.cli).toMatchObject({
       distribution: 'resolveroom-origin',
-      version: '0.1.3',
+      version: '0.1.4',
       bootstrap_url: 'http://resolveroom.test/agent/bootstrap.mjs',
       bundle_url: 'http://resolveroom.test/agent/resolveroom.mjs',
     });
@@ -256,6 +265,13 @@ describe('single-use Codex pairing', () => {
       runtime_tool: 'load_workspace_dependencies',
       node_field: 'node executable',
       environment: expect.stringContaining('package registry'),
+      execution: {
+        tool: 'exec_command',
+        sandbox_permissions: 'require_escalated',
+        network_access: 'required',
+        allowed_origin: 'http://resolveroom.test',
+        justification: expect.stringContaining('resolveroom.test'),
+      },
     });
     expect(manifest.cli.codex_app.connect_arguments).toContain('connect');
     expect(manifest.cli.codex_app.reconnect_arguments).toContain('runner');

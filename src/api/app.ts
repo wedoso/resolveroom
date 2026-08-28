@@ -89,6 +89,13 @@ const bootstrapArguments = (origin: string, command: string[]) => [
 ];
 const bootstrapCommand = (origin: string, command: string[]) =>
   `<NODE_EXECUTABLE> ${bootstrapArguments(origin, command).map(shellArgument).join(' ')}`;
+const codexNetworkExecution = (origin: string) => ({
+  tool: 'exec_command',
+  sandbox_permissions: 'require_escalated',
+  network_access: 'required',
+  allowed_origin: origin,
+  justification: `Allow the bundled Node executable to connect only to ${origin} so it can install or reconnect the ResolveRoom Runner.`,
+});
 
 const jsonBody = async (c: Context) => {
   try {
@@ -284,8 +291,9 @@ export function createApi(db: Database, options: Options = {}) {
         codex_app: {
           runtime_tool: 'load_workspace_dependencies',
           node_field: 'node executable',
+          execution: codexNetworkExecution(allowedOrigin),
           environment:
-            'Use the returned bundled node executable directly. Do not use system Node.js, npm, npx, pnpm, GitHub, or a package registry. The bootstrap creates its own private temporary directory and verifies both downloads by SHA-256.',
+            'Use the returned bundled node executable directly through exec_command with sandbox_permissions=require_escalated. Approve network access for the ResolveRoom origin before invoking it; a restricted command sandbox can return ENOTFOUND even when the site opens in a browser. Do not use system Node.js, npm, npx, pnpm, GitHub, or a package registry. The bootstrap creates its own private temporary directory and verifies both downloads by SHA-256.',
           connect_arguments: bootstrapArguments(allowedOrigin, [
             'connect',
             '<PAIRING_CODE>',
@@ -798,20 +806,20 @@ export function createApi(db: Database, options: Options = {}) {
       '--origin',
       allowedOrigin,
     ]);
-    const runtimePreparation =
-      "call Codex's `load_workspace_dependencies` tool and select its returned `node executable`";
+    const runtimePreparation = `call Codex's \`load_workspace_dependencies\` tool and select its returned \`node executable\`. Before invoking it, call \`exec_command\` with \`sandbox_permissions: "require_escalated"\` and the justification “Allow the bundled Node executable to connect only to ${allowedOrigin} so it can install or reconnect the ResolveRoom Runner.” Wait for network approval; do not first run the command in the restricted sandbox, because that sandbox can return \`ENOTFOUND\` even when the site opens in a browser`;
     return c.json(
       {
         pairing: pairingView(pairing),
         code,
-        instruction: `Connect this computer's Codex to ResolveRoom for “${conflict.title}”. Before running anything, ${runtimePreparation}. Invoke that exact Node executable directly and exactly once with this JSON argument array: \`${JSON.stringify(codexArguments)}\`. Do not use the system Node.js, npm, npx, pnpm, GitHub, or any package registry. Do not wrap, redirect, capture, or parse the command's output. The same-origin bootstrap verifies the downloaded bootstrap and self-contained Runner bundle by SHA-256, validates the local Codex executable before consuming the pairing code, replaces any stale copied runtime, stores a protected recovery copy of the credential, and enables automatic later turns. Protect the private brief and never print or reveal the stored credential. If the result has \`pairing_consumed: true\` but the Runner is not online, keep the returned credential private and recover without a new pairing code by invoking the same bundled Node executable once with: \`${JSON.stringify(codexReconnectArguments)}\`.`,
+        instruction: `Connect this computer's Codex to ResolveRoom for “${conflict.title}”. Before running anything, ${runtimePreparation}. After network access is approved, invoke that exact Node executable directly and exactly once with this JSON argument array: \`${JSON.stringify(codexArguments)}\`. Do not use the system Node.js, npm, npx, pnpm, GitHub, or any package registry. Do not wrap, redirect, capture, or parse the command's output. The same-origin bootstrap verifies the downloaded bootstrap and self-contained Runner bundle by SHA-256, validates the local Codex executable before consuming the pairing code, replaces any stale copied runtime, stores a protected recovery copy of the credential, and enables automatic later turns. Protect the private brief and never print or reveal the stored credential. If a mistaken restricted-sandbox attempt returns \`error: "network_access_required"\` with \`pairing_consumed: false\`, retry the same JSON arguments exactly once using the required escalated network permission. If the result has \`pairing_consumed: true\` but the Runner is not online, keep the returned credential private and recover without a new pairing code by invoking the same bundled Node executable once with: \`${JSON.stringify(codexReconnectArguments)}\`.`,
         command,
         reconnect_command: reconnectCommand,
-        recovery_instruction: `Finish the ResolveRoom Runner setup without generating a new pairing code. First ${runtimePreparation}. Invoke that exact Node executable directly once with this JSON argument array: \`${JSON.stringify(codexReconnectArguments)}\`. This same-origin flow does not use npm, pnpm, GitHub, or a package registry. Do not wrap or redirect the command; its structured output is credential-redacted. Never print or reveal the stored credential or private brief.`,
+        recovery_instruction: `Finish the ResolveRoom Runner setup without generating a new pairing code. First ${runtimePreparation}. After network access is approved, invoke that exact Node executable directly once with this JSON argument array: \`${JSON.stringify(codexReconnectArguments)}\`. This same-origin flow does not use npm, pnpm, GitHub, or a package registry. Do not wrap or redirect the command; its structured output is credential-redacted. If a mistaken restricted-sandbox attempt returns \`error: "network_access_required"\`, retry the same JSON arguments exactly once with the required escalated network permission. Never print or reveal the stored credential or private brief.`,
         codex_runtime: {
           tool: 'load_workspace_dependencies',
           node_field: 'node executable',
           distribution: 'same-origin self-contained bundle',
+          execution: codexNetworkExecution(allowedOrigin),
           bootstrap_sha256: agentAssets.bootstrapSha256,
           bundle_sha256: agentAssets.bundleSha256,
           arguments: codexArguments,

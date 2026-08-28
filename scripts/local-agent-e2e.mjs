@@ -6,6 +6,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import process from 'node:process';
 
 const repository = resolve(import.meta.dirname, '..');
@@ -102,6 +103,26 @@ function runBootstrap(configRoot, args, label) {
   }
   const value = JSON.parse(result.stdout);
   rememberService(value, label);
+  return value;
+}
+
+function runNetworkDeniedBootstrap(configRoot, args, denyNetworkModule) {
+  const result = spawnSync(process.execPath, args, {
+    cwd: repository,
+    encoding: 'utf8',
+    env: {
+      ...clientEnvironment(configRoot),
+      NODE_OPTIONS: `--import=${pathToFileURL(denyNetworkModule).href}`,
+    },
+  });
+  assert(result.status === 69, `Restricted bootstrap exited with ${result.status}.`);
+  const value = JSON.parse(result.stdout);
+  assert(value.error === 'network_access_required', 'Restricted bootstrap hid its DNS cause.');
+  assert(
+    value.pairing_consumed === false,
+    'Restricted bootstrap reported the pairing as consumed.',
+  );
+  assert(value.retry_same_arguments === true, 'Restricted bootstrap did not permit a safe retry.');
   return value;
 }
 
@@ -223,6 +244,12 @@ async function main() {
   }
   const port = await availablePort();
   const origin = `http://localhost:${port}`;
+  const denyNetworkModule = join(temporaryRoot, 'deny-network.mjs');
+  writeFileSync(
+    denyNetworkModule,
+    `globalThis.fetch = async () => { const error = new Error('getaddrinfo ENOTFOUND resolveroom.test'); error.cause = { code: 'ENOTFOUND' }; throw error; };\n`,
+    { mode: 0o600 },
+  );
   run(process.execPath, [
     wrangler,
     'd1',
@@ -337,6 +364,16 @@ async function main() {
     headers: bobHeaders,
     body: JSON.stringify({ agent_name: 'Bob local Codex' }),
   });
+  const denied = runNetworkDeniedBootstrap(
+    clientAConfig,
+    pairingA.codex_runtime.arguments,
+    denyNetworkModule,
+  );
+  assert(denied.required_origin === origin, 'Restricted bootstrap returned the wrong origin.');
+  const unconsumed = await json(origin, `/agent-pairings/${pairingA.pairing.id}`, {
+    headers: aliceHeaders,
+  });
+  assert(unconsumed.pairing.status === 'waiting', 'DNS denial consumed the pairing code.');
   const pairedA = runBootstrap(
     clientAConfig,
     pairingA.codex_runtime.arguments,
@@ -434,7 +471,7 @@ async function main() {
   assert(!existsSync(forbiddenToolMarker), 'The same-origin bootstrap invoked a forbidden tool.');
 
   process.stdout.write(
-    `${JSON.stringify({ passed: true, runners: 2, self_contained_bootstrap: true, github_and_package_managers_blocked: true, server_triggered: true, offline_queue_recovered: true, private_briefs_verified: 2, debate_turns: 6, final_status: finalState.status, judge: 'mock' }, null, 2)}\n`,
+    `${JSON.stringify({ passed: true, runners: 2, self_contained_bootstrap: true, github_and_package_managers_blocked: true, restricted_dns_failure_safe: true, pairing_survived_network_denial: true, approved_network_retry_succeeded: true, server_triggered: true, offline_queue_recovered: true, private_briefs_verified: 2, debate_turns: 6, final_status: finalState.status, judge: 'mock' }, null, 2)}\n`,
   );
 }
 
