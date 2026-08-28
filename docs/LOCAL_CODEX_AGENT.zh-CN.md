@@ -9,19 +9,7 @@
 3. 点击 **Copy instruction for Codex**；
 4. 把整句指令粘贴到本地 Codex task 中。
 
-指令会让 Codex 先在系统临时目录中创建一个新的私有目录，把 `XDG_CACHE_HOME`、`npm_config_cache`、`npm_config_store_dir` 和 `PNPM_HOME` 指向其中不同的子目录；因此用户原有 pnpm cache 或 store 即使只读或属于 root 也不会阻塞连接。随后 Codex 会把 `load_workspace_dependencies` 返回的 `node executable` 所在目录放到 `PATH` 最前面，再使用返回的 `pnpm executable`，避免回退到损坏的系统 Node.js。参数类似：
-
-```bash
-XDG_CACHE_HOME=<PRIVATE_TEMP>/cache \
-  npm_config_cache=<PRIVATE_TEMP>/npm-cache \
-  npm_config_store_dir=<PRIVATE_TEMP>/pnpm-store \
-  PNPM_HOME=<PRIVATE_TEMP>/pnpm-home \
-  RESOLVEROOM_PACKAGE_MANAGER=<BUNDLED_PNPM> \
-  <BUNDLED_PNPM> dlx \
-  --package=git+https://github.com/wedoso/resolveroom.git#v0.1.2 \
-  resolveroom connect XXXX-XXXX-XXXX \
-  --origin https://resolveroom.wedosodavid.workers.dev
-```
+指令会让 Codex 调用 `load_workspace_dependencies`，然后只使用它返回的 `node executable`。这个 bundled Node 会从 ResolveRoom 自己的 HTTPS origin 下载 bootstrap 和自包含 Runner bundle，逐一校验 SHA-256，并从私有临时目录执行。整个流程不会访问 GitHub 或 npm registry，也不会调用 npm、npx、pnpm、curl 或系统 Node.js。网页提供的是可机器读取的 Node JSON 参数数组；安装器会在消费一次性配对码之前验证本机 ChatGPT/Codex executable 可以启动。
 
 Codex 运行后会把 `rr_agent_…` credential 直接存入 macOS Keychain，不会在终端输出它。Windows 和 Linux 使用权限为 `0600` 的用户配置文件。安装器会把正在工作的 bundled Node runtime 复制进 ResolveRoom 的私有 Runner 目录，再安装后台服务并主动连接 ResolveRoom；之后即使系统 Node.js 损坏或升级，Runner 也不受影响。网页会自动显示 **Runner online**。
 
@@ -53,37 +41,19 @@ Agents 页面和 conflict 右侧状态卡会显示：
 3. Codex 执行 `connect` 后会替换旧凭证并重装/重启后台服务；CLI 会直接输出已脱敏的结构化结果，不需要再用 shell 包装、重定向或解析日志；
 4. 等页面变为 **Online** 再点击 Ready（已开始的 conflict 会自动继续排队任务）。
 
-也可以在本机检查或重启已有配置：
-
-```bash
-npm exec --yes --package=git+https://github.com/wedoso/resolveroom.git#v0.1.2 -- \
-  resolveroom runner status \
-  --origin https://resolveroom.wedosodavid.workers.dev
-npm exec --yes --package=git+https://github.com/wedoso/resolveroom.git#v0.1.2 -- \
-  resolveroom runner reconnect \
-  --origin https://resolveroom.wedosodavid.workers.dev
-```
+如需检查或重启已有配置，请在 conflict 页面重新打开 **Reconnect Runner**，把当前 recovery instruction 交给同一台电脑上的 Codex。它会使用同源 bundle 和已经安全保存的 credential，不需要 package manager，也不需要新配对码。
 
 如果本地 credential 已经失效，`runner reconnect` 会明确提示回网页生成新配对指令，而不会要求用户手工复制 credential。
 
 ## Developer options：自定义 Agent runtime
 
-CLI 仍提供以下底层命令：
+仓库开发者仍可通过源码 CLI 使用以下底层命令：
 
 ```bash
-npm exec --yes --package=git+https://github.com/wedoso/resolveroom.git#v0.1.2 -- \
-  resolveroom tasks \
-  --origin https://resolveroom.wedosodavid.workers.dev
-npm exec --yes --package=git+https://github.com/wedoso/resolveroom.git#v0.1.2 -- \
-  resolveroom wait 3600 \
-  --origin https://resolveroom.wedosodavid.workers.dev
-npm exec --yes --package=git+https://github.com/wedoso/resolveroom.git#v0.1.2 -- \
-  resolveroom context <conflict-id> \
-  --origin https://resolveroom.wedosodavid.workers.dev
-printf '%s' '<response>' | npm exec --yes \
-  --package=git+https://github.com/wedoso/resolveroom.git#v0.1.2 -- \
-  resolveroom act <conflict-id> <allowed-action> <stable-request-id> \
-  --origin https://resolveroom.wedosodavid.workers.dev
+npm run agent -- tasks --origin https://resolveroom.wedosodavid.workers.dev
+npm run agent -- wait 3600 --origin https://resolveroom.wedosodavid.workers.dev
+npm run agent -- context <conflict-id> --origin https://resolveroom.wedosodavid.workers.dev
+printf '%s' '<response>' | npm run agent -- act <conflict-id> <allowed-action> <stable-request-id> --origin https://resolveroom.wedosodavid.workers.dev
 ```
 
 只有自行开发 Agent runtime 时才需要进入 `/agents` 手动创建身份和签发长期 API credential。仓库开发者也可以运行：

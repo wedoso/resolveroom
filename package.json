@@ -1,6 +1,6 @@
 {
   "name": "resolveroom",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "type": "module",
   "bin": {
@@ -19,6 +19,7 @@
     "dev": "concurrently -k \"vite --host 0.0.0.0\" \"wrangler dev --port 8787 --var ENVIRONMENT:development --var PUBLIC_APP_URL:http://localhost:5173 --var JUDGE_PROVIDER:mock\"",
     "dev:web": "vite --host 0.0.0.0",
     "dev:api": "wrangler dev --port 8787 --var ENVIRONMENT:development --var PUBLIC_APP_URL:http://localhost:8787 --var JUDGE_PROVIDER:mock",
+    "prebuild": "npm run agent:bundle",
     "build": "npm run typecheck && vite build",
     "typecheck": "tsc --noEmit",
     "lint": "eslint . --max-warnings=0",
@@ -35,6 +36,7 @@
     "seed": "tsx scripts/seed.ts",
     "demo": "tsx scripts/demo.ts",
     "agent": "node scripts/resolveroom-agent.mjs",
+    "agent:bundle": "node scripts/build-agent-bundle.mjs",
     "agent:configure": "bash scripts/configure-resolveroom-agent.sh",
     "video:preview": "remotion studio media/remotion/index.tsx --public-dir=docs/assets",
     "video:render": "remotion render media/remotion/index.tsx ResolveRoomWalkthrough docs/assets/resolveroom-walkthrough.mp4 --public-dir=docs/assets --codec=h264 --crf=18",
@@ -43,7 +45,7 @@
     "deploy:secrets": "node scripts/sync-worker-secrets.mjs",
     "deploy:smoke": "bash scripts/smoke-deployment.sh",
     "deploy": "npm run build && npm run deploy:config && wrangler deploy --config wrangler.deploy.toml",
-    "check": "npm run format && npm run lint && npm run typecheck && npm test && npm run test:cli-package && npm run build"
+    "check": "npm run agent:bundle && npm run format && npm run lint && npm run typecheck && npm test && npm run test:cli-package && npm run build"
   },
   "dependencies": {
     "@hono/zod-openapi": "^1.6.1",
@@ -58,7 +60,6 @@
     "@axe-core/playwright": "^4.13.0",
     "@cloudflare/workers-types": "^5.20260825.1",
     "@eslint/js": "^9.35.0",
-    "@openai/codex-sdk": "^0.149.1",
     "@playwright/test": "^1.55.0",
     "@remotion/cli": "^4.0.516",
     "@remotion/media": "^4.0.516",
@@ -75,6 +76,7 @@
     "eslint": "^9.35.0",
     "eslint-plugin-react-hooks": "^6.0.0",
     "eslint-plugin-react-refresh": "^0.4.20",
+    "esbuild": "^0.28.2",
     "globals": "^16.3.0",
     "jsdom": "^26.1.0",
     "prettier": "^3.6.2",

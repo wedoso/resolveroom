@@ -1,19 +1,25 @@
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
+  accessSync,
   chmodSync,
+  closeSync,
+  constants,
   copyFileSync,
   existsSync,
+  mkdtempSync,
   mkdirSync,
+  openSync,
   readFileSync,
+  rmSync,
   renameSync,
   writeFileSync,
 } from 'node:fs';
-import { homedir, hostname } from 'node:os';
-import { basename, dirname, join, resolve } from 'node:path';
+import { homedir, hostname, tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
 import process from 'node:process';
 
-const runnerVersion = '2.3.0';
+const runnerVersion = '2.4.0';
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
@@ -22,6 +28,7 @@ function safeLine(message, fields = {}) {
 }
 
 function runnerRoot() {
+  if (process.env.RESOLVEROOM_RUNNER_ROOT) return resolve(process.env.RESOLVEROOM_RUNNER_ROOT);
   if (process.platform === 'darwin')
     return join(homedir(), 'Library', 'Application Support', 'ResolveRoom', 'runner');
   if (process.platform === 'win32')
@@ -35,24 +42,6 @@ function runnerRoot() {
     'resolveroom',
     'runner',
   );
-}
-
-function threadStatePath() {
-  return join(runnerRoot(), 'threads.json');
-}
-
-function readThreadState() {
-  try {
-    const parsed = JSON.parse(readFileSync(threadStatePath(), 'utf8'));
-    return parsed && typeof parsed === 'object' ? parsed : {};
-  } catch {
-    return {};
-  }
-}
-
-function saveThreadState(value) {
-  mkdirSync(dirname(threadStatePath()), { recursive: true, mode: 0o700 });
-  writeFileSync(threadStatePath(), JSON.stringify(value, null, 2), { mode: 0o600 });
 }
 
 function parseAgentResponse(value, allowedActions) {
@@ -104,26 +93,16 @@ async function createProvider(providerName) {
         return mockResponse(context);
       },
     };
-  const { Codex } = await import('@openai/codex-sdk');
-  const codex = new Codex();
-  const state = readThreadState();
+  const codexExecutable = resolveCodexExecutable();
   return {
     name: 'codex',
     async run(context) {
-      const savedId = state[context.task.conflict_id];
-      const thread = savedId
-        ? codex.resumeThread(savedId)
-        : codex.startThread({
-            workingDirectory: homedir(),
-            skipGitRepoCheck: true,
-            sandboxMode: 'read-only',
-            approvalPolicy: 'never',
-            networkAccessEnabled: false,
-            modelReasoningEffort: 'medium',
-            threadSource: 'resolveroom-runner',
-          });
-      const result = await thread.run(codexPrompt(context), {
-        outputSchema: {
+      const root = mkdtempSync(join(tmpdir(), 'resolveroom-codex-turn-'));
+      const schemaPath = join(root, 'schema.json');
+      const outputPath = join(root, 'response.json');
+      writeFileSync(
+        schemaPath,
+        JSON.stringify({
           type: 'object',
           additionalProperties: false,
           required: ['action_type', 'content'],
@@ -131,15 +110,108 @@ async function createProvider(providerName) {
             action_type: { type: 'string', enum: context.task.allowed_actions },
             content: { type: 'string', maxLength: 12_000 },
           },
-        },
-      });
-      if (thread.id) {
-        state[context.task.conflict_id] = thread.id;
-        saveThreadState(state);
+        }),
+        { mode: 0o600 },
+      );
+      try {
+        await runCodexTurn({
+          codexExecutable,
+          prompt: codexPrompt(context),
+          schemaPath,
+          outputPath,
+        });
+        return parseAgentResponse(readFileSync(outputPath, 'utf8'), context.task.allowed_actions);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
       }
-      return parseAgentResponse(result.finalResponse, context.task.allowed_actions);
     },
   };
+}
+
+function executableCandidates() {
+  const names = process.platform === 'win32' ? ['codex.exe', 'codex.cmd', 'codex'] : ['codex'];
+  const pathCandidates = (process.env.PATH ?? '')
+    .split(process.platform === 'win32' ? ';' : ':')
+    .filter(Boolean)
+    .flatMap((directory) => names.map((name) => join(directory, name)));
+  return [
+    process.env.RESOLVEROOM_CODEX_EXECUTABLE,
+    process.platform === 'darwin'
+      ? '/Applications/ChatGPT.app/Contents/Resources/codex'
+      : undefined,
+    process.platform === 'darwin'
+      ? join(homedir(), 'Applications', 'ChatGPT.app', 'Contents', 'Resources', 'codex')
+      : undefined,
+    ...pathCandidates,
+  ].filter(Boolean);
+}
+
+export function resolveCodexExecutable() {
+  for (const candidate of executableCandidates()) {
+    try {
+      accessSync(candidate, constants.X_OK);
+      const result = spawnSync(candidate, ['--version'], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      if (result.status === 0) return candidate;
+    } catch {
+      // Try the next stable Codex app/CLI location.
+    }
+  }
+  const error = new Error(
+    'A working Codex executable was not found. Install or update the ChatGPT Codex app, then retry before the pairing code expires.',
+  );
+  error.code = 'CODEX_EXECUTABLE_NOT_FOUND';
+  throw error;
+}
+
+async function runCodexTurn({ codexExecutable, prompt, schemaPath, outputPath }) {
+  const child = spawn(
+    codexExecutable,
+    [
+      'exec',
+      '--ephemeral',
+      '--sandbox',
+      'read-only',
+      '--skip-git-repo-check',
+      '--ignore-rules',
+      '--thread-source',
+      'resolveroom-runner',
+      '--output-schema',
+      schemaPath,
+      '--output-last-message',
+      outputPath,
+      '--color',
+      'never',
+      '-',
+    ],
+    {
+      cwd: homedir(),
+      env: { ...process.env, RESOLVEROOM_AGENT_TURN: '1' },
+      stdio: ['pipe', 'ignore', 'pipe'],
+    },
+  );
+  let stderr = '';
+  child.stderr.on('data', (chunk) => {
+    stderr = `${stderr}${chunk.toString()}`.slice(-8_000);
+  });
+  child.stdin.end(prompt);
+  const result = await new Promise((resolvePromise, reject) => {
+    child.once('error', reject);
+    child.once('exit', (code, signal) => resolvePromise({ code, signal }));
+  });
+  if (result.code === 0 && existsSync(outputPath)) return;
+  const errorCode = /(?:not logged in|authentication|unauthorized)/i.test(stderr)
+    ? 'CODEX_AUTHENTICATION_REQUIRED'
+    : 'CODEX_EXECUTION_FAILED';
+  const error = new Error(
+    errorCode === 'CODEX_AUTHENTICATION_REQUIRED'
+      ? 'The local Codex executable is not signed in. Open Codex, sign in, and reconnect the Runner.'
+      : `The local Codex turn failed${result.signal ? ` (${result.signal})` : ''}.`,
+  );
+  error.code = errorCode;
+  throw error;
 }
 
 async function contextForTask(request, conflictId) {
@@ -305,101 +377,6 @@ function xml(value) {
     .replaceAll('"', '&quot;');
 }
 
-export function resolveRunnerPackageManagerPath({
-  configuredPath = process.env.RESOLVEROOM_PACKAGE_MANAGER,
-  npmExecPath = process.env.npm_execpath,
-  nodeExecutable = process.execPath,
-  platform = process.platform,
-} = {}) {
-  const executableNames = platform === 'win32' ? ['pnpm.cmd', 'pnpm.exe', 'pnpm'] : ['pnpm'];
-  const nodeDirectory = dirname(nodeExecutable);
-  const candidates = [configuredPath, npmExecPath];
-  for (const executableName of executableNames) {
-    candidates.push(
-      resolve(nodeDirectory, '..', '..', 'bin', 'fallback', executableName),
-      resolve(nodeDirectory, '..', 'bin', 'fallback', executableName),
-    );
-  }
-  return candidates.find((candidate) => candidate && existsSync(candidate));
-}
-
-export function runnerDependencyInstallInvocation({
-  packageManagerPath = resolveRunnerPackageManagerPath(),
-  userAgent = process.env.npm_config_user_agent ?? '',
-  nodeExecutable = process.execPath,
-  storeDirectory,
-} = {}) {
-  if (!packageManagerPath || !existsSync(packageManagerPath))
-    throw new Error('A working npm or pnpm executable is required to install the Runner.');
-  const executableName = basename(packageManagerPath).toLowerCase();
-  const pnpm =
-    userAgent.startsWith('pnpm/') || /^pnpm(?:\.c?js|\.cmd|\.exe)?$/.test(executableName);
-  const javascriptCli = /\.(?:c?js|mjs)$/.test(executableName);
-  return pnpm
-    ? {
-        command: javascriptCli ? nodeExecutable : packageManagerPath,
-        args: [
-          ...(javascriptCli ? [packageManagerPath] : []),
-          'install',
-          '--prod',
-          '--no-frozen-lockfile',
-          ...(storeDirectory ? ['--store-dir', storeDirectory] : []),
-        ],
-      }
-    : {
-        command: javascriptCli ? nodeExecutable : packageManagerPath,
-        args: [
-          ...(javascriptCli ? [packageManagerPath] : []),
-          'install',
-          '--omit=dev',
-          '--no-audit',
-          '--no-fund',
-        ],
-      };
-}
-
-export function installRunnerDependencies(root) {
-  const packageJson = {
-    private: true,
-    type: 'module',
-    dependencies: {
-      '@openai/codex-sdk': '0.149.1',
-      ws: '8.21.3',
-    },
-  };
-  writeFileSync(join(root, 'package.json'), JSON.stringify(packageJson, null, 2), { mode: 0o600 });
-  const cache = join(root, 'npm-cache');
-  const store = join(root, 'pnpm-store');
-  mkdirSync(cache, { recursive: true, mode: 0o700 });
-  mkdirSync(store, { recursive: true, mode: 0o700 });
-  const invocation = runnerDependencyInstallInvocation({ storeDirectory: store });
-  const result = spawnSync(invocation.command, invocation.args, {
-    cwd: root,
-    env: {
-      ...process.env,
-      npm_config_cache: cache,
-      npm_config_store_dir: store,
-      XDG_CACHE_HOME: cache,
-      PNPM_HOME: join(root, 'pnpm-home'),
-    },
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-  if (result.error) {
-    result.error.code = 'RUNNER_DEPENDENCY_INSTALL_FAILED';
-    throw result.error;
-  }
-  if (result.status !== 0) {
-    const output = `${result.stderr ?? ''}\n${result.stdout ?? ''}`;
-    const packageManagerCode = output.match(/\b(?:ERR_PNPM_[A-Z0-9_]+|EACCES|EPERM|ENOSPC)\b/)?.[0];
-    const error = new Error(
-      `Runner dependency installation failed${packageManagerCode ? ` (${packageManagerCode})` : ''} with exit code ${result.status ?? 'unknown'}.`,
-    );
-    error.code = 'RUNNER_DEPENDENCY_INSTALL_FAILED';
-    throw error;
-  }
-}
-
 function installRuntime(root) {
   const runtimeDirectory = join(root, 'runtime');
   const installedNode = join(runtimeDirectory, process.platform === 'win32' ? 'node.exe' : 'node');
@@ -427,19 +404,31 @@ export function prepareRunnerInstall({ mainScript, runnerScript, root = runnerRo
   const installedMain = join(root, 'resolveroom-agent.mjs');
   const installedRunner = join(root, 'resolveroom-runner.mjs');
   copyFileSync(mainScript, installedMain);
-  copyFileSync(runnerScript, installedRunner);
-  installRunnerDependencies(root);
+  if (runnerScript && resolve(runnerScript) !== resolve(mainScript))
+    copyFileSync(runnerScript, installedRunner);
   const installedNode = installRuntime(root);
-  return { root, installedMain, installedRunner, installedNode };
+  const codexExecutable =
+    process.env.RESOLVEROOM_RUNNER_PROVIDER === 'mock' ? null : resolveCodexExecutable();
+  return { root, installedMain, installedRunner, installedNode, codexExecutable };
 }
 
-export function launchAgentPlist({ label, installedNode, installedMain, baseUrl, logPath }) {
+export function launchAgentPlist({
+  label,
+  installedNode,
+  installedMain,
+  baseUrl,
+  logPath,
+  codexExecutable,
+}) {
+  const codexEnvironment = codexExecutable
+    ? `<key>RESOLVEROOM_CODEX_EXECUTABLE</key><string>${xml(codexExecutable)}</string>`
+    : '';
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>Label</key><string>${xml(label)}</string>
 <key>ProgramArguments</key><array><string>${xml(installedNode)}</string><string>${xml(installedMain)}</string><string>runner</string><string>start</string><string>--origin</string><string>${xml(baseUrl)}</string></array>
-<key>EnvironmentVariables</key><dict><key>RESOLVEROOM_CREDENTIAL_STORE</key><string>file</string></dict>
+<key>EnvironmentVariables</key><dict><key>RESOLVEROOM_CREDENTIAL_STORE</key><string>file</string>${codexEnvironment}</dict>
 <key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ProcessType</key><string>Background</string>
 <key>StandardOutPath</key><string>${xml(logPath)}</string>
 <key>StandardErrorPath</key><string>${xml(logPath)}</string>
@@ -449,14 +438,43 @@ export function launchAgentPlist({ label, installedNode, installedMain, baseUrl,
 export function installRunner({ baseUrl, mainScript, runnerScript, prepared }) {
   const installation =
     prepared ?? prepareRunnerInstall({ mainScript, runnerScript, root: runnerRoot() });
-  const { root, installedMain, installedNode } = installation;
+  const { root, installedMain, installedNode, codexExecutable } = installation;
   const logPath = join(root, 'runner.log');
+
+  if (process.env.RESOLVEROOM_RUNNER_SERVICE_MODE === 'detached') {
+    const log = openSync(logPath, 'a', 0o600);
+    const child = spawn(installedNode, [installedMain, 'runner', 'start', '--origin', baseUrl], {
+      detached: process.platform !== 'win32',
+      env: {
+        ...process.env,
+        RESOLVEROOM_CREDENTIAL_STORE: 'file',
+        ...(codexExecutable ? { RESOLVEROOM_CODEX_EXECUTABLE: codexExecutable } : {}),
+      },
+      stdio: ['ignore', log, log],
+    });
+    closeSync(log);
+    writeFileSync(join(root, 'service.pid'), String(child.pid), { mode: 0o600 });
+    child.unref();
+    return {
+      managed: false,
+      service: `pid:${child.pid}`,
+      log_path: logPath,
+      runtime: installedNode,
+    };
+  }
 
   if (process.platform === 'darwin') {
     const label = `dev.resolveroom.agent-runner.${serviceId(baseUrl)}`;
     const plistPath = join(homedir(), 'Library', 'LaunchAgents', `${label}.plist`);
     mkdirSync(dirname(plistPath), { recursive: true, mode: 0o700 });
-    const plist = launchAgentPlist({ label, installedNode, installedMain, baseUrl, logPath });
+    const plist = launchAgentPlist({
+      label,
+      installedNode,
+      installedMain,
+      baseUrl,
+      logPath,
+      codexExecutable,
+    });
     writeFileSync(plistPath, plist, { mode: 0o600 });
     const domain = `gui/${process.getuid()}`;
     try {
@@ -482,7 +500,7 @@ export function installRunner({ baseUrl, mainScript, runnerScript, prepared }) {
     mkdirSync(dirname(unitPath), { recursive: true, mode: 0o700 });
     writeFileSync(
       unitPath,
-      `[Unit]\nDescription=ResolveRoom Agent Runner\nAfter=network-online.target\n\n[Service]\nExecStart=${systemdQuote(installedNode)} ${systemdQuote(installedMain)} runner start --origin ${systemdQuote(baseUrl)}\nRestart=always\nRestartSec=3\n\n[Install]\nWantedBy=default.target\n`,
+      `[Unit]\nDescription=ResolveRoom Agent Runner\nAfter=network-online.target\n\n[Service]\n${codexExecutable ? `Environment=RESOLVEROOM_CODEX_EXECUTABLE=${systemdQuote(codexExecutable)}\n` : ''}ExecStart=${systemdQuote(installedNode)} ${systemdQuote(installedMain)} runner start --origin ${systemdQuote(baseUrl)}\nRestart=always\nRestartSec=3\n\n[Install]\nWantedBy=default.target\n`,
       { mode: 0o600 },
     );
     execFileSync('systemctl', ['--user', 'daemon-reload'], { stdio: 'ignore' });
@@ -495,7 +513,7 @@ export function installRunner({ baseUrl, mainScript, runnerScript, prepared }) {
     const launcher = join(root, `runner-${serviceId(baseUrl)}.cmd`);
     writeFileSync(
       launcher,
-      `@echo off\r\n${cmdQuote(installedNode)} ${cmdQuote(installedMain)} runner start --origin ${cmdQuote(baseUrl)}\r\n`,
+      `@echo off\r\n${codexExecutable ? `set "RESOLVEROOM_CODEX_EXECUTABLE=${codexExecutable.replaceAll('%', '%%')}"\r\n` : ''}${cmdQuote(installedNode)} ${cmdQuote(installedMain)} runner start --origin ${cmdQuote(baseUrl)}\r\n`,
       { mode: 0o600 },
     );
     execFileSync(
@@ -539,7 +557,14 @@ export async function waitUntilOnline(request, timeoutMs = 20_000) {
   throw new Error('The Runner service was installed but did not come online in time.');
 }
 
-export async function runRunnerCommand({ args, baseUrl, token, request, mainScript }) {
+export async function runRunnerCommand({
+  args,
+  baseUrl,
+  token,
+  request,
+  mainScript,
+  runnerScript,
+}) {
   const [subcommand = 'status'] = args;
   if (subcommand === 'start') {
     await startRunner({ baseUrl, token, request });
@@ -550,7 +575,7 @@ export async function runRunnerCommand({ args, baseUrl, token, request, mainScri
     const installed = installRunner({
       baseUrl,
       mainScript,
-      runnerScript: new URL(import.meta.url).pathname,
+      runnerScript: runnerScript ?? new URL(import.meta.url).pathname,
     });
     const status = await waitUntilOnline(request);
     return { installed, runner: status };

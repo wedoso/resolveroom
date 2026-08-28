@@ -121,7 +121,7 @@ npm audit --audit-level=high
 
 `npm run check` runs formatting, lint, TypeScript, unit/integration tests, and a production Vite build. The Playwright suite runs the critical product path in desktop Chromium and mobile WebKit, including automated accessibility checks.
 
-`npm run test:agent-e2e` starts an isolated local Worker with real D1 and both Durable Object bindings, pairs two independent clients, starts two persistent mock Runners, verifies each private brief is isolated, deliberately disconnects the first-turn Runner, and proves the queued turn resumes after reconnect. It then requires the server to trigger all six turns and produce a resolved mock-Judge result. Temporary credentials and local database state are deleted when the gate exits.
+`npm run test:agent-e2e` starts an isolated local Worker with real D1 and both Durable Object bindings, blocks GitHub plus every package-manager/curl executable, and connects two independent clients through the production same-origin bootstrap. It verifies each private brief is isolated, deliberately disconnects the first-turn Runner, and proves the recovery bootstrap resumes the queued turn without a new pairing code. It then requires the server to trigger all six turns and produce a resolved mock-Judge result. Temporary credentials, Runner services, and local database state are deleted when the gate exits.
 
 The automated acceptance coverage includes:
 
@@ -168,32 +168,11 @@ The source composition lives in `media/remotion`; the screenshots, preview frame
 
 The normal path requires no credential handling and no per-turn commands. Open a conflict, choose **Connect Codex**, and paste the generated instruction into a Codex task. The instruction tells Codex to select its bundled workspace runtime before running anything, so a missing or broken system Node.js installation cannot block pairing. ResolveRoom automatically creates and binds the representative; a ten-minute, single-use pairing code lets the bootstrap store the credential, copy the working runtime into a private self-contained Runner, and verify its live WebSocket connection without printing the credential.
 
-The copied Codex instruction uses the `node executable` and `pnpm executable` returned by `load_workspace_dependencies`. It creates a private directory in the system temp location and redirects `XDG_CACHE_HOME`, `npm_config_cache`, `npm_config_store_dir`, and `PNPM_HOME` there, so a missing, read-only, or root-owned user pnpm cache or store cannot block the bootstrap. It also prepends bundled Node's directory to `PATH` so package launchers cannot fall back to a broken system Node, then runs arguments shaped like:
-
-```bash
-XDG_CACHE_HOME=<PRIVATE_TEMP>/cache \
-  npm_config_cache=<PRIVATE_TEMP>/npm-cache \
-  npm_config_store_dir=<PRIVATE_TEMP>/pnpm-store \
-  PNPM_HOME=<PRIVATE_TEMP>/pnpm-home \
-  RESOLVEROOM_PACKAGE_MANAGER=<BUNDLED_PNPM> \
-  <BUNDLED_PNPM> dlx \
-  --package=git+https://github.com/wedoso/resolveroom.git#v0.1.2 \
-  resolveroom connect XXXX-XXXX-XXXX \
-  --origin https://resolveroom.wedosodavid.workers.dev
-```
+The copied Codex instruction uses only the `node executable` returned by `load_workspace_dependencies`. That Node process downloads a small bootstrap and a self-contained Runner bundle from the same ResolveRoom HTTPS origin, verifies both SHA-256 hashes, and executes the bundle from a private temporary directory. It never contacts GitHub or a package registry and does not invoke npm, npx, pnpm, curl, or the system Node installation. The public discovery document exposes machine-readable connect and recovery argument arrays. The installer also validates the local ChatGPT/Codex executable before it consumes the single-use pairing code.
 
 The conflict page and `/agents` show **Online**, **Working**, **Reconnecting**, or **Reconnect required**, along with device/provider and last-seen details. Once both parties press Ready, the server dispatches each authorized turn to the correct local Runner; users do not need to reopen Codex or issue another command. The service runs from its validated copied runtime rather than the user's system Node.js. macOS stores the credential in Keychain when available and always writes a `0600` recovery copy for the background Runner, so a locked or managed Keychain cannot strand an already-consumed pairing. If authorization succeeds but the local service does not start, the conflict dialog exposes a credential-safe recovery instruction that runs `runner reconnect` without consuming another pairing code. Claiming a new pairing code revokes the Agent's previous credentials, disconnects the stale Runner, and leaves only the replacement credential valid. The public discovery document is available at `/.well-known/resolveroom-agent.json`.
 
-For local diagnostics or recovery:
-
-```bash
-npm exec --yes --package=git+https://github.com/wedoso/resolveroom.git#v0.1.2 -- \
-  resolveroom runner status \
-  --origin https://resolveroom.wedosodavid.workers.dev
-npm exec --yes --package=git+https://github.com/wedoso/resolveroom.git#v0.1.2 -- \
-  resolveroom runner reconnect \
-  --origin https://resolveroom.wedosodavid.workers.dev
-```
+For diagnostics or recovery, reopen the conflict's **Reconnect Runner** dialog and copy its current recovery instruction into Codex. It uses the same-origin bundle and the already-protected credential; no package manager or new pairing code is required.
 
 For a custom Agent runtime, use the advanced controls in `/agents` to create an identity and issue a one-time credential. Send it only as an Authorization bearer token; a human session cookie and a share token are different identities and cannot act as an agent.
 

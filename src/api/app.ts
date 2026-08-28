@@ -32,6 +32,7 @@ import {
   type OAuthProviderName,
 } from '@/auth/oauth';
 import { NotificationService, type EmailProvider } from '@/notifications/service';
+import { agentAssets } from '@/generated/agent-assets';
 
 type Identity = { kind: 'human'; user: User } | { kind: 'agent'; agent: Agent };
 type AppEnv = { Variables: { requestId: string; identity?: Identity } };
@@ -74,9 +75,20 @@ const disconnectedRunnerStatus = (): RunnerStatus => ({
   reconnect_reason: 'runner_not_connected',
 });
 const limiter = new Map<string, { count: number; reset: number }>();
-const cliPackage = 'git+https://github.com/wedoso/resolveroom.git#v0.1.2';
-const cliCommand = `npm exec --yes --package=${cliPackage} -- resolveroom`;
-const codexPnpmArguments = `dlx --package=${cliPackage} resolveroom`;
+const bootstrapEval = 'await eval(Buffer.from(process.argv[1],"base64").toString("utf8"))';
+const shellArgument = (value: string) => JSON.stringify(value);
+const bootstrapArguments = (origin: string, command: string[]) => [
+  '--input-type=module',
+  '--eval',
+  bootstrapEval,
+  agentAssets.loaderBase64,
+  `${origin}/agent/bootstrap.mjs`,
+  agentAssets.bootstrapSha256,
+  agentAssets.bundleSha256,
+  ...command,
+];
+const bootstrapCommand = (origin: string, command: string[]) =>
+  `<NODE_EXECUTABLE> ${bootstrapArguments(origin, command).map(shellArgument).join(' ')}`;
 
 const jsonBody = async (c: Context) => {
   try {
@@ -244,19 +256,48 @@ export function createApi(db: Database, options: Options = {}) {
         single_use: true,
       },
       cli: {
-        package: cliPackage,
-        command: cliCommand,
-        connect: `${cliCommand} connect <PAIRING_CODE> --origin ${allowedOrigin}`,
-        reconnect: `${cliCommand} runner reconnect --origin ${allowedOrigin}`,
-        pair: `${cliCommand} pair <PAIRING_CODE> --origin ${allowedOrigin}`,
+        distribution: 'resolveroom-origin',
+        version: agentAssets.version,
+        bootstrap_url: `${allowedOrigin}/agent/bootstrap.mjs`,
+        bootstrap_sha256: agentAssets.bootstrapSha256,
+        bundle_url: `${allowedOrigin}/agent/resolveroom.mjs`,
+        bundle_sha256: agentAssets.bundleSha256,
+        manifest_url: `${allowedOrigin}/agent/manifest.json`,
+        connect: bootstrapCommand(allowedOrigin, [
+          'connect',
+          '<PAIRING_CODE>',
+          '--origin',
+          allowedOrigin,
+        ]),
+        reconnect: bootstrapCommand(allowedOrigin, [
+          'runner',
+          'reconnect',
+          '--origin',
+          allowedOrigin,
+        ]),
+        pair: bootstrapCommand(allowedOrigin, [
+          'pair',
+          '<PAIRING_CODE>',
+          '--origin',
+          allowedOrigin,
+        ]),
         codex_app: {
           runtime_tool: 'load_workspace_dependencies',
           node_field: 'node executable',
-          package_manager_field: 'pnpm executable',
           environment:
-            'Create a private temporary directory; point XDG_CACHE_HOME, npm_config_cache, npm_config_store_dir, and PNPM_HOME inside it; prepend the node executable directory to PATH; and set RESOLVEROOM_PACKAGE_MANAGER to the pnpm executable.',
-          connect_arguments: `${codexPnpmArguments} connect <PAIRING_CODE> --origin ${allowedOrigin}`,
-          reconnect_arguments: `${codexPnpmArguments} runner reconnect --origin ${allowedOrigin}`,
+            'Use the returned bundled node executable directly. Do not use system Node.js, npm, npx, pnpm, GitHub, or a package registry. The bootstrap creates its own private temporary directory and verifies both downloads by SHA-256.',
+          connect_arguments: bootstrapArguments(allowedOrigin, [
+            'connect',
+            '<PAIRING_CODE>',
+            '--origin',
+            allowedOrigin,
+          ]),
+          reconnect_arguments: bootstrapArguments(allowedOrigin, [
+            'runner',
+            'reconnect',
+            '--origin',
+            allowedOrigin,
+          ]),
         },
       },
       runtime: {
@@ -738,35 +779,41 @@ export function createApi(db: Database, options: Options = {}) {
       createdAt,
     };
     await db.createAgentPairing(pairing);
-    const command = `${cliCommand} connect ${code} --origin ${allowedOrigin}`;
-    const codexArguments = `${codexPnpmArguments} connect ${code} --origin ${allowedOrigin}`;
-    const reconnectCommand = `${cliCommand} runner reconnect --origin ${allowedOrigin}`;
-    const codexReconnectArguments = `${codexPnpmArguments} runner reconnect --origin ${allowedOrigin}`;
+    const codexArguments = bootstrapArguments(allowedOrigin, [
+      'connect',
+      code,
+      '--origin',
+      allowedOrigin,
+    ]);
+    const codexReconnectArguments = bootstrapArguments(allowedOrigin, [
+      'runner',
+      'reconnect',
+      '--origin',
+      allowedOrigin,
+    ]);
+    const command = bootstrapCommand(allowedOrigin, ['connect', code, '--origin', allowedOrigin]);
+    const reconnectCommand = bootstrapCommand(allowedOrigin, [
+      'runner',
+      'reconnect',
+      '--origin',
+      allowedOrigin,
+    ]);
     const runtimePreparation =
-      "call Codex's `load_workspace_dependencies` tool, create a new private temporary directory in the system temp location, set `XDG_CACHE_HOME`, `npm_config_cache`, `npm_config_store_dir`, and `PNPM_HOME` to separate subdirectories inside it, prepend the returned `node executable` directory to PATH, and set `RESOLVEROOM_PACKAGE_MANAGER` to the returned `pnpm executable`";
+      "call Codex's `load_workspace_dependencies` tool and select its returned `node executable`";
     return c.json(
       {
         pairing: pairingView(pairing),
         code,
-        instruction: `Connect this computer's Codex to ResolveRoom for “${conflict.title}”. Before running anything, ${runtimePreparation}. Use that pnpm executable to run these arguments directly and exactly once: \`${codexArguments}\`. Do not use the system Node.js, npm, npx, or the user's existing pnpm cache. Do not wrap, redirect, capture, or parse the command's output: the ResolveRoom CLI already redacts credentials and returns a safe structured result. The installer completes and validates local prerequisites before consuming the pairing code, replaces any stale copied runtime, stores a protected recovery copy of the credential, and enables automatic later turns. Protect the private brief and never print or reveal the stored credential. If the result has \`pairing_consumed: true\` but the Runner is not online, keep the returned credential private and recover without a new pairing code by repeating the same runtime preparation and running these arguments once: \`${codexReconnectArguments}\`.`,
+        instruction: `Connect this computer's Codex to ResolveRoom for “${conflict.title}”. Before running anything, ${runtimePreparation}. Invoke that exact Node executable directly and exactly once with this JSON argument array: \`${JSON.stringify(codexArguments)}\`. Do not use the system Node.js, npm, npx, pnpm, GitHub, or any package registry. Do not wrap, redirect, capture, or parse the command's output. The same-origin bootstrap verifies the downloaded bootstrap and self-contained Runner bundle by SHA-256, validates the local Codex executable before consuming the pairing code, replaces any stale copied runtime, stores a protected recovery copy of the credential, and enables automatic later turns. Protect the private brief and never print or reveal the stored credential. If the result has \`pairing_consumed: true\` but the Runner is not online, keep the returned credential private and recover without a new pairing code by invoking the same bundled Node executable once with: \`${JSON.stringify(codexReconnectArguments)}\`.`,
         command,
         reconnect_command: reconnectCommand,
-        recovery_instruction: `Finish the ResolveRoom Runner setup without generating a new pairing code. First ${runtimePreparation}. Then use that pnpm executable to run these arguments directly once: \`${codexReconnectArguments}\`. Do not wrap or redirect the command; its structured output is credential-redacted. Never print or reveal the stored credential or private brief.`,
+        recovery_instruction: `Finish the ResolveRoom Runner setup without generating a new pairing code. First ${runtimePreparation}. Invoke that exact Node executable directly once with this JSON argument array: \`${JSON.stringify(codexReconnectArguments)}\`. This same-origin flow does not use npm, pnpm, GitHub, or a package registry. Do not wrap or redirect the command; its structured output is credential-redacted. Never print or reveal the stored credential or private brief.`,
         codex_runtime: {
           tool: 'load_workspace_dependencies',
           node_field: 'node executable',
-          executable_field: 'pnpm executable',
-          path_rule: 'Prepend the directory containing the node executable to PATH.',
-          package_manager_environment_variable: 'RESOLVEROOM_PACKAGE_MANAGER',
-          private_cache: {
-            location: 'new private directory in the system temp location',
-            environment_variables: [
-              'XDG_CACHE_HOME',
-              'npm_config_cache',
-              'npm_config_store_dir',
-              'PNPM_HOME',
-            ],
-          },
+          distribution: 'same-origin self-contained bundle',
+          bootstrap_sha256: agentAssets.bootstrapSha256,
+          bundle_sha256: agentAssets.bundleSha256,
           arguments: codexArguments,
           recovery_arguments: codexReconnectArguments,
         },

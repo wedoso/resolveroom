@@ -16,6 +16,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import process from 'node:process';
 
+const selfContainedBundle = globalThis.__RESOLVEROOM_BUNDLED__ === true;
 const defaultUrl = 'https://resolveroom.wedosodavid.workers.dev';
 const keychainService = 'ResolveRoom Agent Credential';
 const useFileCredentialStore = process.env.RESOLVEROOM_CREDENTIAL_STORE === 'file';
@@ -231,7 +232,9 @@ async function main() {
       validateCredentialStore();
       const runnerModule = await import('./resolveroom-runner.mjs');
       const mainScript = fileURLToPath(import.meta.url);
-      const runnerScript = fileURLToPath(new URL('./resolveroom-runner.mjs', import.meta.url));
+      const runnerScript = selfContainedBundle
+        ? mainScript
+        : fileURLToPath(new URL('./resolveroom-runner.mjs', import.meta.url));
       const prepared = runnerModule.prepareRunnerInstall({ mainScript, runnerScript });
       connectionStage = 'pairing_exchange';
       const { result, storedIn } = await exchangePairing(args[0]);
@@ -284,6 +287,9 @@ async function main() {
         token: agentToken(),
         request: (path, init) => request(path, init),
         mainScript: fileURLToPath(import.meta.url),
+        runnerScript: selfContainedBundle
+          ? fileURLToPath(import.meta.url)
+          : fileURLToPath(new URL('./resolveroom-runner.mjs', import.meta.url)),
       });
       connectionStage = null;
       if (value) print(value);

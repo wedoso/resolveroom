@@ -1,159 +1,95 @@
 #!/usr/bin/env node
 
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import process from 'node:process';
 
-const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
-for (const installerOnlyDependency of ['@openai/codex-sdk', 'ws']) {
-  if (manifest.dependencies?.[installerOnlyDependency]) {
-    throw new Error(
-      `${installerOnlyDependency} must not be a top-level production dependency; the Runner installer owns it.`,
-    );
-  }
+const repository = resolve(import.meta.dirname, '..');
+const bundle = join(repository, 'public', 'agent', 'resolveroom.mjs');
+const manifest = JSON.parse(
+  readFileSync(join(repository, 'public', 'agent', 'manifest.json'), 'utf8'),
+);
+if (!existsSync(bundle)) throw new Error('Run npm run agent:bundle before this gate.');
+
+const source = readFileSync(bundle);
+const bootstrapSource = readFileSync(join(repository, 'public', 'agent', 'bootstrap.mjs'));
+const sha256 = (value) => createHash('sha256').update(value).digest('hex');
+for (const forbidden of ['github.com', 'registry.npmjs.org', '@openai/codex-sdk']) {
+  if (source.includes(Buffer.from(forbidden)))
+    throw new Error(`The self-contained CLI references forbidden installer host ${forbidden}.`);
 }
+if (!/^[a-f0-9]{64}$/.test(manifest.bootstrap.sha256))
+  throw new Error('The bootstrap SHA-256 is invalid.');
+if (!/^[a-f0-9]{64}$/.test(manifest.bundle.sha256))
+  throw new Error('The CLI bundle SHA-256 is invalid.');
+if (sha256(bootstrapSource) !== manifest.bootstrap.sha256)
+  throw new Error('The bootstrap file does not match its published SHA-256.');
+if (sha256(source) !== manifest.bundle.sha256)
+  throw new Error('The CLI bundle does not match its published SHA-256.');
 
-const npmCli = process.env.npm_execpath;
-if (!npmCli || !existsSync(npmCli)) throw new Error('Run this gate through npm.');
-
-const root = mkdtempSync(join(tmpdir(), 'resolveroom-cli-package-'));
-const packageDirectory = join(root, 'package');
-const consumerDirectory = join(root, 'consumer');
-mkdirSync(packageDirectory);
-mkdirSync(consumerDirectory);
+const root = mkdtempSync(join(tmpdir(), 'resolveroom-self-contained-cli-'));
+const forbiddenTools = join(root, 'forbidden-tools');
+const forbiddenMarker = join(root, 'forbidden-called');
+mkdirSync(forbiddenTools);
 
 try {
-  const packed = JSON.parse(
-    execFileSync(
-      process.execPath,
-      [npmCli, 'pack', '--json', '--pack-destination', packageDirectory],
-      { encoding: 'utf8' },
-    ),
-  );
-  const tarball = join(packageDirectory, packed[0].filename);
-  writeFileSync(
-    join(consumerDirectory, 'package.json'),
-    JSON.stringify({ private: true, dependencies: { resolveroom: `file:${tarball}` } }),
-  );
-  execFileSync(process.execPath, [npmCli, 'install', '--omit=dev', '--no-audit', '--no-fund'], {
-    cwd: consumerDirectory,
-    env: { ...process.env, npm_config_cache: join(root, 'npm-cache') },
-    stdio: 'ignore',
-  });
-
-  for (const installerOnlyDependency of ['@openai/codex-sdk', 'ws']) {
-    if (existsSync(join(consumerDirectory, 'node_modules', installerOnlyDependency))) {
-      throw new Error(`${installerOnlyDependency} leaked into the first-run CLI package.`);
-    }
+  if (process.platform !== 'win32') {
+    for (const tool of ['curl', 'git', 'npm', 'npx', 'pnpm'])
+      writeFileSync(
+        join(forbiddenTools, tool),
+        `#!/bin/sh\nprintf '%s\\n' '${tool}' >> '${forbiddenMarker}'\nexit 97\n`,
+        { mode: 0o700 },
+      );
   }
-
-  const output = execFileSync(
-    process.execPath,
-    [
-      join(consumerDirectory, 'node_modules', 'resolveroom', 'scripts', 'resolveroom-agent.mjs'),
-      '--help',
-    ],
-    { encoding: 'utf8' },
-  );
-  if (!output.includes('ResolveRoom agent CLI'))
-    throw new Error('The packed ResolveRoom CLI did not start successfully.');
-
-  const installedRunner = join(
-    consumerDirectory,
-    'node_modules',
-    'resolveroom',
-    'scripts',
-    'resolveroom-runner.mjs',
-  );
-  const {
-    launchAgentPlist,
-    prepareRunnerInstall,
-    resolveRunnerPackageManagerPath,
-    runnerDependencyInstallInvocation,
-  } = await import(pathToFileURL(installedRunner).href);
-  const npmInvocation = runnerDependencyInstallInvocation({
-    packageManagerPath: npmCli,
-    userAgent: 'npm/11.0.0 node/v22.0.0',
-    nodeExecutable: process.execPath,
+  const output = execFileSync(process.execPath, [bundle, '--help'], {
+    encoding: 'utf8',
+    env: { ...process.env, PATH: forbiddenTools, npm_config_offline: 'true' },
   });
-  if (npmInvocation.command !== process.execPath || !npmInvocation.args.includes('--omit=dev'))
-    throw new Error('The Runner did not preserve npm installation support.');
+  if (!output.includes('ResolveRoom agent CLI'))
+    throw new Error('The self-contained ResolveRoom CLI did not start.');
+  if (existsSync(forbiddenMarker))
+    throw new Error('CLI startup invoked an external installer tool.');
 
-  const bundledPnpm = join(root, 'pnpm');
+  const sourceRunner = join(repository, 'scripts', 'resolveroom-runner.mjs');
+  const { launchAgentPlist, prepareRunnerInstall, resolveCodexExecutable } = await import(
+    pathToFileURL(sourceRunner).href
+  );
+  const fakeCodex = join(root, process.platform === 'win32' ? 'codex.cmd' : 'codex');
   writeFileSync(
-    bundledPnpm,
-    '#!/usr/bin/env sh\nprintf \'%s\\n\' "$@" > "$FAKE_PNPM_ARGS_FILE"\nexit 0\n',
+    fakeCodex,
+    process.platform === 'win32'
+      ? '@echo off\r\necho codex-test\r\n'
+      : '#!/bin/sh\necho codex-test\n',
     { mode: 0o700 },
   );
-  const isolatedStore = join(root, 'isolated-store');
-  const pnpmInvocation = runnerDependencyInstallInvocation({
-    packageManagerPath: bundledPnpm,
-    userAgent: 'pnpm/11.0.0 npm/? node/v24.0.0',
-    nodeExecutable: process.execPath,
-    storeDirectory: isolatedStore,
-  });
-  if (
-    pnpmInvocation.command !== bundledPnpm ||
-    !pnpmInvocation.args.includes('--prod') ||
-    !pnpmInvocation.args.includes('--store-dir') ||
-    !pnpmInvocation.args.includes(isolatedStore)
-  )
-    throw new Error('The Runner did not recognize the Codex-bundled pnpm executable.');
-
-  const bundledDependencies = join(root, 'bundled-runtime', 'dependencies');
-  const bundledNode = join(bundledDependencies, 'node', 'bin', 'node');
-  const discoveredPnpm = join(bundledDependencies, 'bin', 'fallback', 'pnpm');
-  mkdirSync(join(bundledDependencies, 'node', 'bin'), { recursive: true });
-  mkdirSync(join(bundledDependencies, 'bin', 'fallback'), { recursive: true });
-  writeFileSync(bundledNode, '', { mode: 0o700 });
-  writeFileSync(discoveredPnpm, '#!/usr/bin/env sh\nexit 0\n', { mode: 0o700 });
-  const resolvedPnpm = resolveRunnerPackageManagerPath({
-    configuredPath: '',
-    npmExecPath: '',
-    nodeExecutable: bundledNode,
-    platform: 'darwin',
-  });
-  if (resolvedPnpm !== discoveredPnpm)
-    throw new Error('The Runner could not discover pnpm beside the Codex-bundled Node runtime.');
-
-  const preparedRoot = join(root, 'prepared-runner');
-  const fakePnpmArguments = join(root, 'fake-pnpm-arguments.txt');
-  mkdirSync(join(preparedRoot, 'runtime'), { recursive: true });
-  writeFileSync(join(preparedRoot, 'runtime', 'node'), '#!/usr/bin/env sh\nexit 99\n', {
-    mode: 0o700,
-  });
-  const previousPackageManager = process.env.RESOLVEROOM_PACKAGE_MANAGER;
-  const previousArgumentsFile = process.env.FAKE_PNPM_ARGS_FILE;
-  process.env.RESOLVEROOM_PACKAGE_MANAGER = bundledPnpm;
-  process.env.FAKE_PNPM_ARGS_FILE = fakePnpmArguments;
+  const previousCodex = process.env.RESOLVEROOM_CODEX_EXECUTABLE;
+  const previousProvider = process.env.RESOLVEROOM_RUNNER_PROVIDER;
+  process.env.RESOLVEROOM_CODEX_EXECUTABLE = fakeCodex;
+  process.env.RESOLVEROOM_RUNNER_PROVIDER = 'codex';
   try {
+    if (resolveCodexExecutable() !== fakeCodex)
+      throw new Error('The Runner did not validate the configured Codex executable.');
     const prepared = prepareRunnerInstall({
-      mainScript: join(
-        consumerDirectory,
-        'node_modules',
-        'resolveroom',
-        'scripts',
-        'resolveroom-agent.mjs',
-      ),
-      runnerScript: installedRunner,
-      root: preparedRoot,
+      mainScript: bundle,
+      runnerScript: bundle,
+      root: join(root, 'installed-runner'),
     });
     const installedVersion = execFileSync(prepared.installedNode, ['--version'], {
       encoding: 'utf8',
     }).trim();
     if (installedVersion !== process.version)
-      throw new Error('The Runner did not replace and validate a stale copied Node runtime.');
-    const installArguments = readFileSync(fakePnpmArguments, 'utf8');
-    if (!installArguments.includes('--store-dir') || !installArguments.includes('pnpm-store'))
-      throw new Error('The Runner dependency install did not isolate the pnpm store.');
+      throw new Error('The Runner did not copy and validate the bundled Node runtime.');
+    if (prepared.codexExecutable !== fakeCodex)
+      throw new Error('The installed Runner did not preserve the validated Codex executable.');
   } finally {
-    if (previousPackageManager === undefined) delete process.env.RESOLVEROOM_PACKAGE_MANAGER;
-    else process.env.RESOLVEROOM_PACKAGE_MANAGER = previousPackageManager;
-    if (previousArgumentsFile === undefined) delete process.env.FAKE_PNPM_ARGS_FILE;
-    else process.env.FAKE_PNPM_ARGS_FILE = previousArgumentsFile;
+    if (previousCodex === undefined) delete process.env.RESOLVEROOM_CODEX_EXECUTABLE;
+    else process.env.RESOLVEROOM_CODEX_EXECUTABLE = previousCodex;
+    if (previousProvider === undefined) delete process.env.RESOLVEROOM_RUNNER_PROVIDER;
+    else process.env.RESOLVEROOM_RUNNER_PROVIDER = previousProvider;
   }
 
   const plist = launchAgentPlist({
@@ -162,11 +98,15 @@ try {
     installedMain: '/private/runner.mjs',
     baseUrl: 'https://resolveroom.example',
     logPath: '/private/runner.log',
+    codexExecutable: '/Applications/ChatGPT.app/Contents/Resources/codex',
   });
-  if (!plist.includes('RESOLVEROOM_CREDENTIAL_STORE') || !plist.includes('<string>file</string>'))
-    throw new Error('The macOS service did not force the private Runner credential store.');
+  if (!plist.includes('RESOLVEROOM_CREDENTIAL_STORE'))
+    throw new Error('The macOS service did not force the private credential store.');
+  if (!plist.includes('RESOLVEROOM_CODEX_EXECUTABLE'))
+    throw new Error('The macOS service did not preserve the validated Codex executable.');
+
   process.stdout.write(
-    'Packed CLI isolates pnpm, replaces stale runtimes, and configures safe Runner recovery.\n',
+    'Self-contained CLI starts offline, validates Codex, and installs without GitHub or package managers.\n',
   );
 } finally {
   rmSync(root, { recursive: true, force: true });
