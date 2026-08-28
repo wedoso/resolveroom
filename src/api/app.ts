@@ -74,7 +74,7 @@ const disconnectedRunnerStatus = (): RunnerStatus => ({
   reconnect_reason: 'runner_not_connected',
 });
 const limiter = new Map<string, { count: number; reset: number }>();
-const cliPackage = 'git+https://github.com/wedoso/resolveroom.git#v0.1.1';
+const cliPackage = 'git+https://github.com/wedoso/resolveroom.git#v0.1.2';
 const cliCommand = `npm exec --yes --package=${cliPackage} -- resolveroom`;
 const codexPnpmArguments = `dlx --package=${cliPackage} resolveroom`;
 
@@ -247,14 +247,16 @@ export function createApi(db: Database, options: Options = {}) {
         package: cliPackage,
         command: cliCommand,
         connect: `${cliCommand} connect <PAIRING_CODE> --origin ${allowedOrigin}`,
+        reconnect: `${cliCommand} runner reconnect --origin ${allowedOrigin}`,
         pair: `${cliCommand} pair <PAIRING_CODE> --origin ${allowedOrigin}`,
         codex_app: {
           runtime_tool: 'load_workspace_dependencies',
           node_field: 'node executable',
           package_manager_field: 'pnpm executable',
           environment:
-            'Create a private temporary directory; point XDG_CACHE_HOME, npm_config_cache, and PNPM_HOME inside it; prepend the node executable directory to PATH; and set RESOLVEROOM_PACKAGE_MANAGER to the pnpm executable.',
+            'Create a private temporary directory; point XDG_CACHE_HOME, npm_config_cache, npm_config_store_dir, and PNPM_HOME inside it; prepend the node executable directory to PATH; and set RESOLVEROOM_PACKAGE_MANAGER to the pnpm executable.',
           connect_arguments: `${codexPnpmArguments} connect <PAIRING_CODE> --origin ${allowedOrigin}`,
+          reconnect_arguments: `${codexPnpmArguments} runner reconnect --origin ${allowedOrigin}`,
         },
       },
       runtime: {
@@ -738,12 +740,18 @@ export function createApi(db: Database, options: Options = {}) {
     await db.createAgentPairing(pairing);
     const command = `${cliCommand} connect ${code} --origin ${allowedOrigin}`;
     const codexArguments = `${codexPnpmArguments} connect ${code} --origin ${allowedOrigin}`;
+    const reconnectCommand = `${cliCommand} runner reconnect --origin ${allowedOrigin}`;
+    const codexReconnectArguments = `${codexPnpmArguments} runner reconnect --origin ${allowedOrigin}`;
+    const runtimePreparation =
+      "call Codex's `load_workspace_dependencies` tool, create a new private temporary directory in the system temp location, set `XDG_CACHE_HOME`, `npm_config_cache`, `npm_config_store_dir`, and `PNPM_HOME` to separate subdirectories inside it, prepend the returned `node executable` directory to PATH, and set `RESOLVEROOM_PACKAGE_MANAGER` to the returned `pnpm executable`";
     return c.json(
       {
         pairing: pairingView(pairing),
         code,
-        instruction: `Connect this computer's Codex to ResolveRoom for “${conflict.title}”. Before running a command, call Codex's \`load_workspace_dependencies\` tool and create a new private temporary directory in the system temp location. For the same command, set \`XDG_CACHE_HOME\`, \`npm_config_cache\`, and \`PNPM_HOME\` to separate subdirectories inside that temporary directory; prepend the directory containing the returned \`node executable\` to PATH; and set \`RESOLVEROOM_PACKAGE_MANAGER\` to the returned \`pnpm executable\`. Then use that pnpm executable to run these arguments exactly once: \`${codexArguments}\`. Do not use the system Node.js, npm, npx, or the user's existing pnpm cache. The installer validates and installs the self-contained Runner before consuming the pairing code, copies the working bundled runtime into its private directory, stores the credential securely, and enables automatic later turns. Protect the private brief and never print or reveal the stored credential. If the bundled runtime tool or a writable private temporary directory is unavailable, stop and report that condition without consuming the pairing code.`,
+        instruction: `Connect this computer's Codex to ResolveRoom for “${conflict.title}”. Before running anything, ${runtimePreparation}. Use that pnpm executable to run these arguments directly and exactly once: \`${codexArguments}\`. Do not use the system Node.js, npm, npx, or the user's existing pnpm cache. Do not wrap, redirect, capture, or parse the command's output: the ResolveRoom CLI already redacts credentials and returns a safe structured result. The installer completes and validates local prerequisites before consuming the pairing code, replaces any stale copied runtime, stores a protected recovery copy of the credential, and enables automatic later turns. Protect the private brief and never print or reveal the stored credential. If the result has \`pairing_consumed: true\` but the Runner is not online, keep the returned credential private and recover without a new pairing code by repeating the same runtime preparation and running these arguments once: \`${codexReconnectArguments}\`.`,
         command,
+        reconnect_command: reconnectCommand,
+        recovery_instruction: `Finish the ResolveRoom Runner setup without generating a new pairing code. First ${runtimePreparation}. Then use that pnpm executable to run these arguments directly once: \`${codexReconnectArguments}\`. Do not wrap or redirect the command; its structured output is credential-redacted. Never print or reveal the stored credential or private brief.`,
         codex_runtime: {
           tool: 'load_workspace_dependencies',
           node_field: 'node executable',
@@ -752,9 +760,15 @@ export function createApi(db: Database, options: Options = {}) {
           package_manager_environment_variable: 'RESOLVEROOM_PACKAGE_MANAGER',
           private_cache: {
             location: 'new private directory in the system temp location',
-            environment_variables: ['XDG_CACHE_HOME', 'npm_config_cache', 'PNPM_HOME'],
+            environment_variables: [
+              'XDG_CACHE_HOME',
+              'npm_config_cache',
+              'npm_config_store_dir',
+              'PNPM_HOME',
+            ],
           },
           arguments: codexArguments,
+          recovery_arguments: codexReconnectArguments,
         },
         agent: { id: ag.id, name: ag.name },
         party: { id: party.id, role: party.role, agent_bound: true },

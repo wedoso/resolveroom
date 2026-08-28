@@ -9,15 +9,16 @@
 3. 点击 **Copy instruction for Codex**；
 4. 把整句指令粘贴到本地 Codex task 中。
 
-指令会让 Codex 先在系统临时目录中创建一个新的私有目录，把 `XDG_CACHE_HOME`、`npm_config_cache` 和 `PNPM_HOME` 指向其中不同的子目录；因此用户原有 pnpm cache 即使只读或属于 root 也不会阻塞连接。随后 Codex 会把 `load_workspace_dependencies` 返回的 `node executable` 所在目录放到 `PATH` 最前面，再使用返回的 `pnpm executable`，避免回退到损坏的系统 Node.js。参数类似：
+指令会让 Codex 先在系统临时目录中创建一个新的私有目录，把 `XDG_CACHE_HOME`、`npm_config_cache`、`npm_config_store_dir` 和 `PNPM_HOME` 指向其中不同的子目录；因此用户原有 pnpm cache 或 store 即使只读或属于 root 也不会阻塞连接。随后 Codex 会把 `load_workspace_dependencies` 返回的 `node executable` 所在目录放到 `PATH` 最前面，再使用返回的 `pnpm executable`，避免回退到损坏的系统 Node.js。参数类似：
 
 ```bash
 XDG_CACHE_HOME=<PRIVATE_TEMP>/cache \
   npm_config_cache=<PRIVATE_TEMP>/npm-cache \
+  npm_config_store_dir=<PRIVATE_TEMP>/pnpm-store \
   PNPM_HOME=<PRIVATE_TEMP>/pnpm-home \
   RESOLVEROOM_PACKAGE_MANAGER=<BUNDLED_PNPM> \
   <BUNDLED_PNPM> dlx \
-  --package=git+https://github.com/wedoso/resolveroom.git#v0.1.1 \
+  --package=git+https://github.com/wedoso/resolveroom.git#v0.1.2 \
   resolveroom connect XXXX-XXXX-XXXX \
   --origin https://resolveroom.wedosodavid.workers.dev
 ```
@@ -49,16 +50,16 @@ Agents 页面和 conflict 右侧状态卡会显示：
 
 1. 打开 conflict 或 Agents 页面，点击 **Reconnect Runner**；
 2. 复制新的单次指令给 Codex；
-3. Codex 执行 `connect` 后会替换旧凭证并重装/重启后台服务；
+3. Codex 执行 `connect` 后会替换旧凭证并重装/重启后台服务；CLI 会直接输出已脱敏的结构化结果，不需要再用 shell 包装、重定向或解析日志；
 4. 等页面变为 **Online** 再点击 Ready（已开始的 conflict 会自动继续排队任务）。
 
 也可以在本机检查或重启已有配置：
 
 ```bash
-npm exec --yes --package=git+https://github.com/wedoso/resolveroom.git#v0.1.1 -- \
+npm exec --yes --package=git+https://github.com/wedoso/resolveroom.git#v0.1.2 -- \
   resolveroom runner status \
   --origin https://resolveroom.wedosodavid.workers.dev
-npm exec --yes --package=git+https://github.com/wedoso/resolveroom.git#v0.1.1 -- \
+npm exec --yes --package=git+https://github.com/wedoso/resolveroom.git#v0.1.2 -- \
   resolveroom runner reconnect \
   --origin https://resolveroom.wedosodavid.workers.dev
 ```
@@ -70,17 +71,17 @@ npm exec --yes --package=git+https://github.com/wedoso/resolveroom.git#v0.1.1 --
 CLI 仍提供以下底层命令：
 
 ```bash
-npm exec --yes --package=git+https://github.com/wedoso/resolveroom.git#v0.1.1 -- \
+npm exec --yes --package=git+https://github.com/wedoso/resolveroom.git#v0.1.2 -- \
   resolveroom tasks \
   --origin https://resolveroom.wedosodavid.workers.dev
-npm exec --yes --package=git+https://github.com/wedoso/resolveroom.git#v0.1.1 -- \
+npm exec --yes --package=git+https://github.com/wedoso/resolveroom.git#v0.1.2 -- \
   resolveroom wait 3600 \
   --origin https://resolveroom.wedosodavid.workers.dev
-npm exec --yes --package=git+https://github.com/wedoso/resolveroom.git#v0.1.1 -- \
+npm exec --yes --package=git+https://github.com/wedoso/resolveroom.git#v0.1.2 -- \
   resolveroom context <conflict-id> \
   --origin https://resolveroom.wedosodavid.workers.dev
 printf '%s' '<response>' | npm exec --yes \
-  --package=git+https://github.com/wedoso/resolveroom.git#v0.1.1 -- \
+  --package=git+https://github.com/wedoso/resolveroom.git#v0.1.2 -- \
   resolveroom act <conflict-id> <allowed-action> <stable-request-id> \
   --origin https://resolveroom.wedosodavid.workers.dev
 ```

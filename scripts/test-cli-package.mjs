@@ -68,9 +68,12 @@ try {
     'scripts',
     'resolveroom-runner.mjs',
   );
-  const { resolveRunnerPackageManagerPath, runnerDependencyInstallInvocation } = await import(
-    pathToFileURL(installedRunner).href
-  );
+  const {
+    launchAgentPlist,
+    prepareRunnerInstall,
+    resolveRunnerPackageManagerPath,
+    runnerDependencyInstallInvocation,
+  } = await import(pathToFileURL(installedRunner).href);
   const npmInvocation = runnerDependencyInstallInvocation({
     packageManagerPath: npmCli,
     userAgent: 'npm/11.0.0 node/v22.0.0',
@@ -80,13 +83,24 @@ try {
     throw new Error('The Runner did not preserve npm installation support.');
 
   const bundledPnpm = join(root, 'pnpm');
-  writeFileSync(bundledPnpm, '#!/usr/bin/env sh\nexit 0\n', { mode: 0o700 });
+  writeFileSync(
+    bundledPnpm,
+    '#!/usr/bin/env sh\nprintf \'%s\\n\' "$@" > "$FAKE_PNPM_ARGS_FILE"\nexit 0\n',
+    { mode: 0o700 },
+  );
+  const isolatedStore = join(root, 'isolated-store');
   const pnpmInvocation = runnerDependencyInstallInvocation({
     packageManagerPath: bundledPnpm,
     userAgent: 'pnpm/11.0.0 npm/? node/v24.0.0',
     nodeExecutable: process.execPath,
+    storeDirectory: isolatedStore,
   });
-  if (pnpmInvocation.command !== bundledPnpm || !pnpmInvocation.args.includes('--prod'))
+  if (
+    pnpmInvocation.command !== bundledPnpm ||
+    !pnpmInvocation.args.includes('--prod') ||
+    !pnpmInvocation.args.includes('--store-dir') ||
+    !pnpmInvocation.args.includes(isolatedStore)
+  )
     throw new Error('The Runner did not recognize the Codex-bundled pnpm executable.');
 
   const bundledDependencies = join(root, 'bundled-runtime', 'dependencies');
@@ -104,8 +118,55 @@ try {
   });
   if (resolvedPnpm !== discoveredPnpm)
     throw new Error('The Runner could not discover pnpm beside the Codex-bundled Node runtime.');
+
+  const preparedRoot = join(root, 'prepared-runner');
+  const fakePnpmArguments = join(root, 'fake-pnpm-arguments.txt');
+  mkdirSync(join(preparedRoot, 'runtime'), { recursive: true });
+  writeFileSync(join(preparedRoot, 'runtime', 'node'), '#!/usr/bin/env sh\nexit 99\n', {
+    mode: 0o700,
+  });
+  const previousPackageManager = process.env.RESOLVEROOM_PACKAGE_MANAGER;
+  const previousArgumentsFile = process.env.FAKE_PNPM_ARGS_FILE;
+  process.env.RESOLVEROOM_PACKAGE_MANAGER = bundledPnpm;
+  process.env.FAKE_PNPM_ARGS_FILE = fakePnpmArguments;
+  try {
+    const prepared = prepareRunnerInstall({
+      mainScript: join(
+        consumerDirectory,
+        'node_modules',
+        'resolveroom',
+        'scripts',
+        'resolveroom-agent.mjs',
+      ),
+      runnerScript: installedRunner,
+      root: preparedRoot,
+    });
+    const installedVersion = execFileSync(prepared.installedNode, ['--version'], {
+      encoding: 'utf8',
+    }).trim();
+    if (installedVersion !== process.version)
+      throw new Error('The Runner did not replace and validate a stale copied Node runtime.');
+    const installArguments = readFileSync(fakePnpmArguments, 'utf8');
+    if (!installArguments.includes('--store-dir') || !installArguments.includes('pnpm-store'))
+      throw new Error('The Runner dependency install did not isolate the pnpm store.');
+  } finally {
+    if (previousPackageManager === undefined) delete process.env.RESOLVEROOM_PACKAGE_MANAGER;
+    else process.env.RESOLVEROOM_PACKAGE_MANAGER = previousPackageManager;
+    if (previousArgumentsFile === undefined) delete process.env.FAKE_PNPM_ARGS_FILE;
+    else process.env.FAKE_PNPM_ARGS_FILE = previousArgumentsFile;
+  }
+
+  const plist = launchAgentPlist({
+    label: 'dev.resolveroom.test',
+    installedNode: '/private/runtime/node',
+    installedMain: '/private/runner.mjs',
+    baseUrl: 'https://resolveroom.example',
+    logPath: '/private/runner.log',
+  });
+  if (!plist.includes('RESOLVEROOM_CREDENTIAL_STORE') || !plist.includes('<string>file</string>'))
+    throw new Error('The macOS service did not force the private Runner credential store.');
   process.stdout.write(
-    'Packed CLI starts without Runner-only dependencies and supports bundled pnpm.\n',
+    'Packed CLI isolates pnpm, replaces stale runtimes, and configures safe Runner recovery.\n',
   );
 } finally {
   rmSync(root, { recursive: true, force: true });

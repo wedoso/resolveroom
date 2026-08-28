@@ -20,6 +20,7 @@ import {
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { Link, Navigate, useNavigate, useParams } from 'react-router-dom';
 import { api, relativeTime } from './api';
+import { copyText } from './clipboard';
 import {
   AppShell,
   Brand,
@@ -841,7 +842,7 @@ export function AgentsPage() {
                 <button
                   className="icon-button"
                   aria-label="Copy credential"
-                  onClick={() => void navigator.clipboard.writeText(token.value)}
+                  onClick={() => void copyText(token.value)}
                 >
                   <Copy />
                 </button>

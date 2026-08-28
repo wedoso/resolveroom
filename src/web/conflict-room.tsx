@@ -23,6 +23,7 @@ import {
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { api } from './api';
+import { copyText } from './clipboard';
 import {
   AppShell,
   ConfirmDialog,
@@ -315,7 +316,7 @@ export function ConflictRoomPage() {
                 <input readOnly value={invite.url} />
                 <button
                   className="icon-button"
-                  onClick={() => void navigator.clipboard.writeText(invite.url)}
+                  onClick={() => void copyText(invite.url)}
                   aria-label="Copy invitation"
                 >
                   <Copy />
@@ -486,6 +487,7 @@ function AgentCard({
   const [pairing, setPairing] = useState<any>(null);
   const [pairingError, setPairingError] = useState('');
   const [copied, setCopied] = useState(false);
+  const [copiedRecovery, setCopiedRecovery] = useState(false);
   const bind = async (agentId: string) => {
     setBusy(true);
     await api(`/conflicts/${id}/agent`, {
@@ -499,6 +501,7 @@ function AgentCard({
     setBusy(true);
     setPairingError('');
     setCopied(false);
+    setCopiedRecovery(false);
     try {
       const value = await api<any>(`/conflicts/${id}/agent/pairings`, {
         method: 'POST',
@@ -667,6 +670,11 @@ function AgentCard({
                 3 · Connected
               </li>
             </ol>
+            {pairingError && (
+              <p className="form-error" role="alert">
+                {pairingError}
+              </p>
+            )}
             {pairing.pairing.status === 'connected' && party.runner?.online ? (
               <div className="pairing-success">
                 <span>
@@ -695,6 +703,29 @@ function AgentCard({
                   Codex is installing and starting the local Runner. This normally takes less than a
                   minute; the page will update automatically.
                 </p>
+                <p>
+                  If Codex reported an installation or startup error, finish the setup with the
+                  recovery instruction below. The credential is already stored, so this does not
+                  need or consume another pairing code.
+                </p>
+                <button
+                  className="button secondary wide"
+                  onClick={async () => {
+                    try {
+                      await copyText(pairing.recovery_instruction);
+                      setCopiedRecovery(true);
+                    } catch (error) {
+                      setPairingError(
+                        error instanceof Error ? error.message : 'Could not copy the instruction.',
+                      );
+                    }
+                  }}
+                >
+                  {copiedRecovery ? <Check /> : <Copy />}
+                  {copiedRecovery
+                    ? 'Recovery instruction copied'
+                    : 'Copy Runner recovery instruction'}
+                </button>
               </div>
             ) : pairing.pairing.status === 'waiting' ? (
               <>
@@ -706,8 +737,14 @@ function AgentCard({
                 <button
                   className="button large wide"
                   onClick={async () => {
-                    await navigator.clipboard.writeText(pairing.instruction);
-                    setCopied(true);
+                    try {
+                      await copyText(pairing.instruction);
+                      setCopied(true);
+                    } catch (error) {
+                      setPairingError(
+                        error instanceof Error ? error.message : 'Could not copy the instruction.',
+                      );
+                    }
                   }}
                 >
                   {copied ? <Check /> : <Copy />}
@@ -943,7 +980,7 @@ function SettingsPanel({
   const create = async () => {
     setCreating(true);
     const value = await api<any>(`/conflicts/${id}/share-links`, { method: 'POST', body: '{}' });
-    await navigator.clipboard.writeText(value.share_link.url);
+    await copyText(value.share_link.url);
     await load();
     setCreating(false);
   };

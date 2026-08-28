@@ -1,4 +1,4 @@
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   chmodSync,
@@ -6,13 +6,14 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  renameSync,
   writeFileSync,
 } from 'node:fs';
 import { homedir, hostname } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import process from 'node:process';
 
-const runnerVersion = '2.2.0';
+const runnerVersion = '2.3.0';
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
@@ -326,6 +327,7 @@ export function runnerDependencyInstallInvocation({
   packageManagerPath = resolveRunnerPackageManagerPath(),
   userAgent = process.env.npm_config_user_agent ?? '',
   nodeExecutable = process.execPath,
+  storeDirectory,
 } = {}) {
   if (!packageManagerPath || !existsSync(packageManagerPath))
     throw new Error('A working npm or pnpm executable is required to install the Runner.');
@@ -341,6 +343,7 @@ export function runnerDependencyInstallInvocation({
           'install',
           '--prod',
           '--no-frozen-lockfile',
+          ...(storeDirectory ? ['--store-dir', storeDirectory] : []),
         ],
       }
     : {
@@ -366,26 +369,52 @@ export function installRunnerDependencies(root) {
   };
   writeFileSync(join(root, 'package.json'), JSON.stringify(packageJson, null, 2), { mode: 0o600 });
   const cache = join(root, 'npm-cache');
+  const store = join(root, 'pnpm-store');
   mkdirSync(cache, { recursive: true, mode: 0o700 });
-  const invocation = runnerDependencyInstallInvocation();
-  execFileSync(invocation.command, invocation.args, {
+  mkdirSync(store, { recursive: true, mode: 0o700 });
+  const invocation = runnerDependencyInstallInvocation({ storeDirectory: store });
+  const result = spawnSync(invocation.command, invocation.args, {
     cwd: root,
     env: {
       ...process.env,
       npm_config_cache: cache,
+      npm_config_store_dir: store,
       XDG_CACHE_HOME: cache,
       PNPM_HOME: join(root, 'pnpm-home'),
     },
-    stdio: 'ignore',
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
   });
+  if (result.error) {
+    result.error.code = 'RUNNER_DEPENDENCY_INSTALL_FAILED';
+    throw result.error;
+  }
+  if (result.status !== 0) {
+    const output = `${result.stderr ?? ''}\n${result.stdout ?? ''}`;
+    const packageManagerCode = output.match(/\b(?:ERR_PNPM_[A-Z0-9_]+|EACCES|EPERM|ENOSPC)\b/)?.[0];
+    const error = new Error(
+      `Runner dependency installation failed${packageManagerCode ? ` (${packageManagerCode})` : ''} with exit code ${result.status ?? 'unknown'}.`,
+    );
+    error.code = 'RUNNER_DEPENDENCY_INSTALL_FAILED';
+    throw error;
+  }
 }
 
 function installRuntime(root) {
   const runtimeDirectory = join(root, 'runtime');
   const installedNode = join(runtimeDirectory, process.platform === 'win32' ? 'node.exe' : 'node');
+  const temporaryNode = `${installedNode}.new`;
   mkdirSync(runtimeDirectory, { recursive: true, mode: 0o700 });
-  if (!existsSync(installedNode)) copyFileSync(process.execPath, installedNode);
-  if (process.platform !== 'win32') chmodSync(installedNode, 0o700);
+  copyFileSync(process.execPath, temporaryNode);
+  if (process.platform !== 'win32') chmodSync(temporaryNode, 0o700);
+  renameSync(temporaryNode, installedNode);
+  try {
+    execFileSync(installedNode, ['--version'], { stdio: 'ignore' });
+  } catch {
+    const error = new Error('The copied bundled Node runtime could not start.');
+    error.code = 'RUNNER_RUNTIME_INVALID';
+    throw error;
+  }
   return installedNode;
 }
 
@@ -404,6 +433,19 @@ export function prepareRunnerInstall({ mainScript, runnerScript, root = runnerRo
   return { root, installedMain, installedRunner, installedNode };
 }
 
+export function launchAgentPlist({ label, installedNode, installedMain, baseUrl, logPath }) {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>${xml(label)}</string>
+<key>ProgramArguments</key><array><string>${xml(installedNode)}</string><string>${xml(installedMain)}</string><string>runner</string><string>start</string><string>--origin</string><string>${xml(baseUrl)}</string></array>
+<key>EnvironmentVariables</key><dict><key>RESOLVEROOM_CREDENTIAL_STORE</key><string>file</string></dict>
+<key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ProcessType</key><string>Background</string>
+<key>StandardOutPath</key><string>${xml(logPath)}</string>
+<key>StandardErrorPath</key><string>${xml(logPath)}</string>
+</dict></plist>\n`;
+}
+
 export function installRunner({ baseUrl, mainScript, runnerScript, prepared }) {
   const installation =
     prepared ?? prepareRunnerInstall({ mainScript, runnerScript, root: runnerRoot() });
@@ -414,24 +456,23 @@ export function installRunner({ baseUrl, mainScript, runnerScript, prepared }) {
     const label = `dev.resolveroom.agent-runner.${serviceId(baseUrl)}`;
     const plistPath = join(homedir(), 'Library', 'LaunchAgents', `${label}.plist`);
     mkdirSync(dirname(plistPath), { recursive: true, mode: 0o700 });
-    const plist = `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-<key>Label</key><string>${xml(label)}</string>
-<key>ProgramArguments</key><array><string>${xml(installedNode)}</string><string>${xml(installedMain)}</string><string>runner</string><string>start</string><string>--origin</string><string>${xml(baseUrl)}</string></array>
-<key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
-<key>StandardOutPath</key><string>${xml(logPath)}</string>
-<key>StandardErrorPath</key><string>${xml(logPath)}</string>
-</dict></plist>\n`;
+    const plist = launchAgentPlist({ label, installedNode, installedMain, baseUrl, logPath });
     writeFileSync(plistPath, plist, { mode: 0o600 });
     const domain = `gui/${process.getuid()}`;
     try {
-      execFileSync('launchctl', ['bootout', domain, plistPath], { stdio: 'ignore' });
+      execFileSync('launchctl', ['bootout', `${domain}/${label}`], { stdio: 'ignore' });
     } catch {
       // A first install has no existing service to remove.
     }
-    execFileSync('launchctl', ['bootstrap', domain, plistPath], { stdio: 'ignore' });
-    execFileSync('launchctl', ['enable', `${domain}/${label}`], { stdio: 'ignore' });
+    try {
+      execFileSync('launchctl', ['bootstrap', domain, plistPath], { stdio: 'ignore' });
+      execFileSync('launchctl', ['enable', `${domain}/${label}`], { stdio: 'ignore' });
+      execFileSync('launchctl', ['kickstart', '-k', `${domain}/${label}`], { stdio: 'ignore' });
+    } catch {
+      const error = new Error('macOS could not register or start the ResolveRoom LaunchAgent.');
+      error.code = 'RUNNER_SERVICE_INSTALL_FAILED';
+      throw error;
+    }
     return { managed: true, service: label, log_path: logPath, runtime: installedNode };
   }
 

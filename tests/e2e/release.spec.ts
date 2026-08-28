@@ -247,8 +247,84 @@ test('a participant authorizes the Runner from the conflict with one short-lived
     timeout: 10_000,
   });
   await expect(page.getByText('Authorization complete')).toBeVisible();
+  await expect(
+    page.getByRole('button', { name: 'Copy Runner recovery instruction' }),
+  ).toBeVisible();
+  await page.getByRole('button', { name: 'Copy Runner recovery instruction' }).click();
+  await expect(page.getByRole('button', { name: 'Recovery instruction copied' })).toBeVisible();
   expect(await page.locator('body').textContent()).not.toContain(exchanged.credential);
   expect(signedIn.user.displayName).toBe('Pairing UI');
+});
+
+test('simultaneous readiness is serialized into one conflict start', async ({ request }) => {
+  const suffix = `ready-${unique()}`;
+  const alice = await user(request, 'Ready Alice', suffix);
+  const bob = await user(request, 'Ready Bob', suffix);
+  const created = await body(
+    await request.post('/api/v1/conflicts', {
+      headers: headers(alice.id),
+      data: {
+        title: `Concurrent readiness ${suffix}`,
+        description: 'Both participants may become ready at the same time.',
+        protocol_type: 'debate',
+        max_rounds: 3,
+      },
+    }),
+  );
+  const id = created.conflict.id;
+  const invitation = await body(
+    await request.post(`/api/v1/conflicts/${id}/invite`, {
+      headers: headers(alice.id),
+      data: {},
+    }),
+  );
+  await body(
+    await request.post(`/api/v1/invites/${invitation.invite.url.split('/').at(-1)}/accept`, {
+      headers: headers(bob.id),
+      data: {},
+    }),
+  );
+  await body(
+    await request.post(`/api/v1/conflicts/${id}/agent/pairings`, {
+      headers: headers(alice.id),
+      data: { agent_name: 'Ready Alice Agent' },
+    }),
+  );
+  await body(
+    await request.post(`/api/v1/conflicts/${id}/agent/pairings`, {
+      headers: headers(bob.id),
+      data: { agent_name: 'Ready Bob Agent' },
+    }),
+  );
+
+  const [aliceReady, bobReady] = await Promise.all([
+    request.post(`/api/v1/conflicts/${id}/ready`, {
+      headers: headers(alice.id),
+      data: { ready: true },
+    }),
+    request.post(`/api/v1/conflicts/${id}/ready`, {
+      headers: headers(bob.id),
+      data: { ready: true },
+    }),
+  ]);
+  expect(aliceReady.ok(), await aliceReady.text()).toBeTruthy();
+  expect(bobReady.ok(), await bobReady.text()).toBeTruthy();
+
+  const state = await body(
+    await request.get(`/api/v1/conflicts/${id}`, { headers: headers(alice.id) }),
+  );
+  const transcript = await body(
+    await request.get(`/api/v1/conflicts/${id}/events`, { headers: headers(alice.id) }),
+  );
+  const sequences = transcript.events.map((event: any) => event.sequenceNumber);
+  expect(state.status).toBe('active');
+  expect(new Set(sequences).size).toBe(sequences.length);
+  expect(
+    transcript.events.filter((event: any) => event.eventType === 'conflict_started'),
+  ).toHaveLength(1);
+  expect(
+    transcript.events.filter((event: any) => event.eventType === 'phase_started'),
+  ).toHaveLength(1);
 });
 
 test('an idle agent can be deleted through the guarded developer flow', async ({ page }) => {

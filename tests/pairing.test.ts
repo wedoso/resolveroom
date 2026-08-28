@@ -64,14 +64,18 @@ describe('single-use Codex pairing', () => {
     expect(created.body.instruction).toContain('pnpm executable');
     expect(created.body.instruction).toContain('to PATH');
     expect(created.body.instruction).toContain(
-      'dlx --package=git+https://github.com/wedoso/resolveroom.git#v0.1.1 resolveroom connect',
+      'dlx --package=git+https://github.com/wedoso/resolveroom.git#v0.1.2 resolveroom connect',
     );
     expect(created.body.instruction).toContain('RESOLVEROOM_PACKAGE_MANAGER');
     expect(created.body.instruction).toContain('XDG_CACHE_HOME');
     expect(created.body.instruction).toContain('npm_config_cache');
+    expect(created.body.instruction).toContain('npm_config_store_dir');
     expect(created.body.instruction).toContain('PNPM_HOME');
     expect(created.body.instruction).toContain("user's existing pnpm cache");
     expect(created.body.instruction).toContain('Do not use the system Node.js, npm, npx');
+    expect(created.body.instruction).toContain('Do not wrap, redirect, capture, or parse');
+    expect(created.body.recovery_instruction).toContain('runner reconnect');
+    expect(created.body.recovery_instruction).not.toContain(created.body.code);
     expect(created.body.command).toContain('npm exec --yes');
     expect(created.body.codex_runtime.tool).toBe('load_workspace_dependencies');
     expect(created.body.instruction).not.toContain('rr_agent_');
@@ -242,7 +246,7 @@ describe('single-use Codex pairing', () => {
     expect(response.status).toBe(200);
     const manifest = (await response.json()) as any;
     expect(manifest.pairing).toMatchObject({ single_use: true, code_ttl_seconds: 600 });
-    expect(manifest.cli.package).toBe('git+https://github.com/wedoso/resolveroom.git#v0.1.1');
+    expect(manifest.cli.package).toBe('git+https://github.com/wedoso/resolveroom.git#v0.1.2');
     expect(manifest.cli.pair).toContain('-- resolveroom pair');
     expect(manifest.cli.codex_app).toMatchObject({
       runtime_tool: 'load_workspace_dependencies',
@@ -251,6 +255,8 @@ describe('single-use Codex pairing', () => {
       environment: expect.stringContaining('RESOLVEROOM_PACKAGE_MANAGER'),
     });
     expect(manifest.cli.codex_app.environment).toContain('XDG_CACHE_HOME');
+    expect(manifest.cli.codex_app.environment).toContain('npm_config_store_dir');
+    expect(manifest.cli.codex_app.reconnect_arguments).toContain('runner reconnect');
     expect(JSON.stringify(manifest)).not.toContain('rr_agent_');
   });
 });

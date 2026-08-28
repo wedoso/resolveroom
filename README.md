@@ -168,28 +168,29 @@ The source composition lives in `media/remotion`; the screenshots, preview frame
 
 The normal path requires no credential handling and no per-turn commands. Open a conflict, choose **Connect Codex**, and paste the generated instruction into a Codex task. The instruction tells Codex to select its bundled workspace runtime before running anything, so a missing or broken system Node.js installation cannot block pairing. ResolveRoom automatically creates and binds the representative; a ten-minute, single-use pairing code lets the bootstrap store the credential, copy the working runtime into a private self-contained Runner, and verify its live WebSocket connection without printing the credential.
 
-The copied Codex instruction uses the `node executable` and `pnpm executable` returned by `load_workspace_dependencies`. It creates a private directory in the system temp location and redirects `XDG_CACHE_HOME`, `npm_config_cache`, and `PNPM_HOME` there, so a missing, read-only, or root-owned user pnpm cache cannot block the bootstrap. It also prepends bundled Node's directory to `PATH` so package launchers cannot fall back to a broken system Node, then runs arguments shaped like:
+The copied Codex instruction uses the `node executable` and `pnpm executable` returned by `load_workspace_dependencies`. It creates a private directory in the system temp location and redirects `XDG_CACHE_HOME`, `npm_config_cache`, `npm_config_store_dir`, and `PNPM_HOME` there, so a missing, read-only, or root-owned user pnpm cache or store cannot block the bootstrap. It also prepends bundled Node's directory to `PATH` so package launchers cannot fall back to a broken system Node, then runs arguments shaped like:
 
 ```bash
 XDG_CACHE_HOME=<PRIVATE_TEMP>/cache \
   npm_config_cache=<PRIVATE_TEMP>/npm-cache \
+  npm_config_store_dir=<PRIVATE_TEMP>/pnpm-store \
   PNPM_HOME=<PRIVATE_TEMP>/pnpm-home \
   RESOLVEROOM_PACKAGE_MANAGER=<BUNDLED_PNPM> \
   <BUNDLED_PNPM> dlx \
-  --package=git+https://github.com/wedoso/resolveroom.git#v0.1.1 \
+  --package=git+https://github.com/wedoso/resolveroom.git#v0.1.2 \
   resolveroom connect XXXX-XXXX-XXXX \
   --origin https://resolveroom.wedosodavid.workers.dev
 ```
 
-The conflict page and `/agents` show **Online**, **Working**, **Reconnecting**, or **Reconnect required**, along with device/provider and last-seen details. Once both parties press Ready, the server dispatches each authorized turn to the correct local Runner; users do not need to reopen Codex or issue another command. The service runs from its copied private runtime rather than the user's system Node.js. If the machine was restarted or the service was removed, use the page's reconnect instruction. Claiming a new pairing code revokes the Agent's previous credentials, disconnects the stale Runner, and leaves only the replacement credential valid. The public discovery document is available at `/.well-known/resolveroom-agent.json`.
+The conflict page and `/agents` show **Online**, **Working**, **Reconnecting**, or **Reconnect required**, along with device/provider and last-seen details. Once both parties press Ready, the server dispatches each authorized turn to the correct local Runner; users do not need to reopen Codex or issue another command. The service runs from its validated copied runtime rather than the user's system Node.js. macOS stores the credential in Keychain when available and always writes a `0600` recovery copy for the background Runner, so a locked or managed Keychain cannot strand an already-consumed pairing. If authorization succeeds but the local service does not start, the conflict dialog exposes a credential-safe recovery instruction that runs `runner reconnect` without consuming another pairing code. Claiming a new pairing code revokes the Agent's previous credentials, disconnects the stale Runner, and leaves only the replacement credential valid. The public discovery document is available at `/.well-known/resolveroom-agent.json`.
 
 For local diagnostics or recovery:
 
 ```bash
-npm exec --yes --package=git+https://github.com/wedoso/resolveroom.git#v0.1.1 -- \
+npm exec --yes --package=git+https://github.com/wedoso/resolveroom.git#v0.1.2 -- \
   resolveroom runner status \
   --origin https://resolveroom.wedosodavid.workers.dev
-npm exec --yes --package=git+https://github.com/wedoso/resolveroom.git#v0.1.1 -- \
+npm exec --yes --package=git+https://github.com/wedoso/resolveroom.git#v0.1.2 -- \
   resolveroom runner reconnect \
   --origin https://resolveroom.wedosodavid.workers.dev
 ```
