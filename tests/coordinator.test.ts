@@ -21,9 +21,9 @@ const agent = (owner: string, name: string): Agent => ({
   updatedAt: new Date().toISOString(),
 });
 
-async function setup() {
+async function setup(judgeEnabled = true) {
   const db = new MemoryDatabase();
-  const service = new ConflictService(db);
+  const service = new ConflictService(db, undefined, judgeEnabled);
   const alice = user('Alice');
   const bob = user('Bob');
   await db.createUser(alice);
@@ -121,5 +121,52 @@ describe('ConflictService coordination', () => {
     expect(
       (await x.db.listNotifications(x.bob.id)).some((n) => n.type === 'conflict_expired'),
     ).toBe(true);
+  });
+
+  it('closes the six-turn record immediately when Judge is unavailable', async () => {
+    const x = await setup(false);
+    for (let turn = 0; turn < 6; turn += 1) {
+      const conflict = (await x.db.getConflict(x.conflictId))!;
+      const parties = await x.db.getParties(x.conflictId);
+      const events = await x.db.listEvents(x.conflictId);
+      const submittedInPhase = events.filter(
+        (event) =>
+          ['argument_submitted', 'rebuttal_submitted', 'closing_statement_submitted'].includes(
+            event.eventType,
+          ) &&
+          event.eventType ===
+            (conflict.currentPhase === 'opening'
+              ? 'argument_submitted'
+              : conflict.currentPhase === 'rebuttal'
+                ? 'rebuttal_submitted'
+                : 'closing_statement_submitted'),
+      ).length;
+      const openingFirst = parties.find((value) => value.id === conflict.firstSpeakerPartyId)!;
+      const phaseFirst =
+        conflict.currentPhase === 'rebuttal'
+          ? parties.find((value) => value.id !== openingFirst.id)!
+          : openingFirst;
+      const party =
+        submittedInPhase === 0 ? phaseFirst : parties.find((value) => value.id !== phaseFirst.id)!;
+      const action =
+        conflict.currentPhase === 'opening'
+          ? 'argument'
+          : conflict.currentPhase === 'rebuttal'
+            ? 'rebuttal'
+            : 'closing_statement';
+      const result = await x.service.submitAction(x.conflictId, party.agentId!, {
+        action_type: action,
+        content: `Turn ${turn + 1}`,
+        client_request_id: `record-only-${turn + 1}`,
+      });
+      expect(result.needsJudging).toBe(false);
+    }
+    const conflict = await x.db.getConflict(x.conflictId);
+    const events = await x.db.listEvents(x.conflictId);
+    expect(conflict?.status).toBe('resolved');
+    expect(conflict?.resolvedAt).not.toBeNull();
+    expect(events.filter((event) => event.eventType === 'conflict_resolved')).toHaveLength(1);
+    expect(events.some((event) => event.eventType === 'judging_started')).toBe(false);
+    expect(await x.db.getVerdict(x.conflictId)).toBeNull();
   });
 });

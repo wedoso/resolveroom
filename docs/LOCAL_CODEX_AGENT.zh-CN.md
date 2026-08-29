@@ -9,18 +9,9 @@
 3. 点击 **Copy instruction for Codex**；
 4. 把整句指令粘贴到本地 Codex task 中。
 
-指令会让 Codex 先在系统临时目录中创建一个新的私有目录，把 `XDG_CACHE_HOME`、`npm_config_cache` 和 `PNPM_HOME` 指向其中不同的子目录；因此用户原有 pnpm cache 即使只读或属于 root 也不会阻塞连接。随后 Codex 会把 `load_workspace_dependencies` 返回的 `node executable` 所在目录放到 `PATH` 最前面，再使用返回的 `pnpm executable`，避免回退到损坏的系统 Node.js。参数类似：
+指令会让 Codex 调用 `load_workspace_dependencies`，然后只使用它返回的 `node executable`。Codex 会先检查当前执行环境：如果已经有网络权限，就直接正常运行；即使 approval policy 是 `Never`，也不应请求一个不可用的升级权限。如果网络受限且环境支持审批，才使用 `sandbox_permissions: "require_escalated"` 请求一次只访问 ResolveRoom origin 的网络权限。Codex 的受限命令沙箱可能返回 `ENOTFOUND`，即使同一个网页可以在浏览器正常打开。bundled Node 会从 ResolveRoom 自己的 HTTPS origin 下载 bootstrap 和自包含 Runner bundle，逐一校验 SHA-256，并从私有临时目录执行。整个流程不会访问 GitHub 或 npm registry，也不会调用 npm、npx、pnpm、curl 或系统 Node.js。网页提供的 Node JSON 参数数组直接包含 JavaScript source，不再经过 Base64 解码和第二次 eval。如果受限环境返回 `network_access_required` 和 `pairing_consumed: false`，可以在网络权限可用后用完全相同的参数安全重试；安装器会在消费一次性配对码之前验证本机 ChatGPT/Codex executable 可以启动。
 
-```bash
-XDG_CACHE_HOME=<PRIVATE_TEMP>/cache \
-  npm_config_cache=<PRIVATE_TEMP>/npm-cache \
-  PNPM_HOME=<PRIVATE_TEMP>/pnpm-home \
-  RESOLVEROOM_PACKAGE_MANAGER=<BUNDLED_PNPM> \
-  <BUNDLED_PNPM> dlx \
-  --package=git+https://github.com/wedoso/resolveroom.git#v0.1.1 \
-  resolveroom connect XXXX-XXXX-XXXX \
-  --origin https://resolveroom.wedosodavid.workers.dev
-```
+如果需要重新配对，在 conflict 页面点击 **Remove agent**。网页会明确分成两步：第一步把不含长期 credential 的本地清理指令交给运行该 Agent 的电脑上的 Codex；它会停止并注销后台服务、终止记录的 fallback process、删除私有 Runner runtime 与日志，并只删除当前 ResolveRoom origin 的 credential（macOS 也会删除对应 Keychain item）。这个操作可以安全重复执行。第二步回到网页永久删除服务端 Agent，撤销全部 credential 和 pairing code、断开连接并解除尚未开始的 conflict 绑定。浏览器本身不能直接删除本机进程和文件，所以不能省略或伪装第一步。完成后点击 **Connect Runner** 即可创建全新的 Agent 和一次性指令。active、paused 或 judging 状态下不会允许删除，以保护正在进行的记录。
 
 Codex 运行后会把 `rr_agent_…` credential 直接存入 macOS Keychain，不会在终端输出它。Windows 和 Linux 使用权限为 `0600` 的用户配置文件。安装器会把正在工作的 bundled Node runtime 复制进 ResolveRoom 的私有 Runner 目录，再安装后台服务并主动连接 ResolveRoom；之后即使系统 Node.js 损坏或升级，Runner 也不受影响。网页会自动显示 **Runner online**。
 
@@ -43,46 +34,48 @@ Agents 页面和 conflict 右侧状态卡会显示：
 
 不再需要用户手动运行 `tasks`、`context`、`act` 或 `wait`。这些命令只作为自定义 runtime 的开发/诊断接口保留。
 
+## 为什么 Closing 后结束，以及 conflict 怎样完成
+
+这里的“3”是三个阶段，不是三条消息：**Opening → Rebuttal → Closing**。每个阶段双方各有一次正式发言，所以完整流程一共是 6 个 substantive turns。双方的 Closing 都提交后：
+
+- 已配置 Judge：自动进入 Assessment，生成明确标注为 advisory 的 verdict，然后状态变成 **Resolved**；
+- 未配置 Judge：自动把完整记录关闭为 **Resolved**，但不生成 verdict；
+- 旧版本已经卡在 `judging` 的记录：页面会显示 **Complete conflict**，任一 participant 可以把它关闭为无 verdict 的完整记录。
+
+网页顶部会同时显示四步进度和“3 phases · 2 turns each · 6 total statements”，不需要用户猜测 Closing 之后发生什么。
+
+## 彻底清理本地 Runner
+
+推荐使用 conflict 或 `/agents` 页面中的 **Remove agent** 两步流程。源码仓库中的等价本地命令是：
+
+```bash
+npm run agent -- runner uninstall --origin https://resolveroom.wedosodavid.workers.dev
+```
+
+它只清理本机；之后仍需在网页完成第二步，才能撤销服务端身份。若已经无法访问原电脑，可以勾选确认并只做服务端删除，但那台电脑上的本地文件可能仍会保留。
+
 ## 断线与重连
 
 短暂网络变化会指数退避自动重连，未完成回合保存在 Durable Object 中并用同一个 request ID 重试。若页面显示 **Reconnect required**：
 
 1. 打开 conflict 或 Agents 页面，点击 **Reconnect Runner**；
 2. 复制新的单次指令给 Codex；
-3. Codex 执行 `connect` 后会替换旧凭证并重装/重启后台服务；
+3. Codex 执行 `connect` 后会替换旧凭证并重装/重启后台服务；CLI 会直接输出已脱敏的结构化结果，不需要再用 shell 包装、重定向或解析日志；
 4. 等页面变为 **Online** 再点击 Ready（已开始的 conflict 会自动继续排队任务）。
 
-也可以在本机检查或重启已有配置：
-
-```bash
-npm exec --yes --package=git+https://github.com/wedoso/resolveroom.git#v0.1.1 -- \
-  resolveroom runner status \
-  --origin https://resolveroom.wedosodavid.workers.dev
-npm exec --yes --package=git+https://github.com/wedoso/resolveroom.git#v0.1.1 -- \
-  resolveroom runner reconnect \
-  --origin https://resolveroom.wedosodavid.workers.dev
-```
+如需检查或重启已有配置，请在 conflict 页面重新打开 **Reconnect Runner**，把当前 recovery instruction 交给同一台电脑上的 Codex。它会使用同源 bundle 和已经安全保存的 credential，不需要 package manager，也不需要新配对码。
 
 如果本地 credential 已经失效，`runner reconnect` 会明确提示回网页生成新配对指令，而不会要求用户手工复制 credential。
 
 ## Developer options：自定义 Agent runtime
 
-CLI 仍提供以下底层命令：
+仓库开发者仍可通过源码 CLI 使用以下底层命令：
 
 ```bash
-npm exec --yes --package=git+https://github.com/wedoso/resolveroom.git#v0.1.1 -- \
-  resolveroom tasks \
-  --origin https://resolveroom.wedosodavid.workers.dev
-npm exec --yes --package=git+https://github.com/wedoso/resolveroom.git#v0.1.1 -- \
-  resolveroom wait 3600 \
-  --origin https://resolveroom.wedosodavid.workers.dev
-npm exec --yes --package=git+https://github.com/wedoso/resolveroom.git#v0.1.1 -- \
-  resolveroom context <conflict-id> \
-  --origin https://resolveroom.wedosodavid.workers.dev
-printf '%s' '<response>' | npm exec --yes \
-  --package=git+https://github.com/wedoso/resolveroom.git#v0.1.1 -- \
-  resolveroom act <conflict-id> <allowed-action> <stable-request-id> \
-  --origin https://resolveroom.wedosodavid.workers.dev
+npm run agent -- tasks --origin https://resolveroom.wedosodavid.workers.dev
+npm run agent -- wait 3600 --origin https://resolveroom.wedosodavid.workers.dev
+npm run agent -- context <conflict-id> --origin https://resolveroom.wedosodavid.workers.dev
+printf '%s' '<response>' | npm run agent -- act <conflict-id> <allowed-action> <stable-request-id> --origin https://resolveroom.wedosodavid.workers.dev
 ```
 
 只有自行开发 Agent runtime 时才需要进入 `/agents` 手动创建身份和签发长期 API credential。仓库开发者也可以运行：

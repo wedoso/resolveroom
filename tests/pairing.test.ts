@@ -61,19 +61,33 @@ describe('single-use Codex pairing', () => {
     expect(created.body.code).toMatch(/^[A-HJ-NP-Z2-9]{4}(?:-[A-HJ-NP-Z2-9]{4}){2}$/);
     expect(created.body.instruction).toContain('load_workspace_dependencies');
     expect(created.body.instruction).toContain('node executable');
-    expect(created.body.instruction).toContain('pnpm executable');
-    expect(created.body.instruction).toContain('to PATH');
-    expect(created.body.instruction).toContain(
-      'dlx --package=git+https://github.com/wedoso/resolveroom.git#v0.1.1 resolveroom connect',
-    );
-    expect(created.body.instruction).toContain('RESOLVEROOM_PACKAGE_MANAGER');
-    expect(created.body.instruction).toContain('XDG_CACHE_HOME');
-    expect(created.body.instruction).toContain('npm_config_cache');
-    expect(created.body.instruction).toContain('PNPM_HOME');
-    expect(created.body.instruction).toContain("user's existing pnpm cache");
-    expect(created.body.instruction).toContain('Do not use the system Node.js, npm, npx');
-    expect(created.body.command).toContain('npm exec --yes');
+    expect(created.body.instruction).toContain('JSON argument array');
+    expect(created.body.instruction).toContain('sandbox_permissions: "require_escalated"');
+    expect(created.body.instruction).toContain('approval policy is `Never`');
+    expect(created.body.instruction).toContain('direct JavaScript source');
+    expect(created.body.instruction).toContain('network_access_required');
+    expect(created.body.instruction).toContain('/agent/bootstrap.mjs');
+    expect(created.body.instruction).toContain('SHA-256');
+    expect(created.body.instruction).toContain('Do not use the system Node.js, npm, npx, pnpm');
+    expect(created.body.instruction).toContain('Do not wrap, redirect, capture, or parse');
+    expect(created.body.instruction).not.toContain('github.com');
+    expect(created.body.instruction).not.toContain('registry.npmjs.org');
+    expect(created.body.recovery_instruction).toContain('"runner","reconnect"');
+    expect(created.body.recovery_instruction).not.toContain(created.body.code);
+    expect(created.body.command).toContain('<NODE_EXECUTABLE>');
     expect(created.body.codex_runtime.tool).toBe('load_workspace_dependencies');
+    expect(created.body.codex_runtime.execution).toMatchObject({
+      tool: 'exec_command',
+      network_access: 'required',
+      allowed_origin: 'http://resolveroom.test',
+      approval_strategy: 'use_existing_network_or_request_when_supported',
+      when_approval_is_supported: {
+        sandbox_permissions: 'require_escalated',
+      },
+    });
+    expect(created.body.codex_runtime.arguments).toContain('connect');
+    expect(created.body.codex_runtime.arguments).toContain(created.body.code);
+    expect(created.body.codex_runtime.arguments).not.toContain('pnpm');
     expect(created.body.instruction).not.toContain('rr_agent_');
 
     const before = await h.request(`/api/v1/conflicts/${h.conflictId}`, {
@@ -242,15 +256,38 @@ describe('single-use Codex pairing', () => {
     expect(response.status).toBe(200);
     const manifest = (await response.json()) as any;
     expect(manifest.pairing).toMatchObject({ single_use: true, code_ttl_seconds: 600 });
-    expect(manifest.cli.package).toBe('git+https://github.com/wedoso/resolveroom.git#v0.1.1');
-    expect(manifest.cli.pair).toContain('-- resolveroom pair');
+    expect(manifest.cli).toMatchObject({
+      distribution: 'resolveroom-origin',
+      version: '0.1.6',
+      bootstrap_url: 'http://resolveroom.test/agent/bootstrap.mjs',
+      bundle_url: 'http://resolveroom.test/agent/resolveroom.mjs',
+    });
+    expect(manifest.cli.bootstrap_sha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(manifest.cli.bundle_sha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(manifest.cli.pair).toContain('<NODE_EXECUTABLE>');
     expect(manifest.cli.codex_app).toMatchObject({
       runtime_tool: 'load_workspace_dependencies',
       node_field: 'node executable',
-      package_manager_field: 'pnpm executable',
-      environment: expect.stringContaining('RESOLVEROOM_PACKAGE_MANAGER'),
+      environment: expect.stringContaining('package registry'),
+      execution: {
+        tool: 'exec_command',
+        network_access: 'required',
+        allowed_origin: 'http://resolveroom.test',
+        approval_strategy: 'use_existing_network_or_request_when_supported',
+        when_approval_is_supported: {
+          sandbox_permissions: 'require_escalated',
+          justification: expect.stringContaining('resolveroom.test'),
+        },
+      },
     });
-    expect(manifest.cli.codex_app.environment).toContain('XDG_CACHE_HOME');
+    expect(manifest.cli.codex_app.connect_arguments).toContain('connect');
+    expect(manifest.cli.codex_app.reconnect_arguments).toContain('runner');
+    expect(manifest.cli.codex_app.reconnect_arguments).toContain('reconnect');
+    expect(JSON.stringify(manifest.cli.codex_app.connect_arguments)).not.toContain(
+      'Buffer.from(process.argv[1]',
+    );
+    expect(JSON.stringify(manifest)).not.toContain('github.com');
+    expect(JSON.stringify(manifest)).not.toContain('registry.npmjs.org');
     expect(JSON.stringify(manifest)).not.toContain('rr_agent_');
   });
 });

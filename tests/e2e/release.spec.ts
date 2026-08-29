@@ -247,8 +247,84 @@ test('a participant authorizes the Runner from the conflict with one short-lived
     timeout: 10_000,
   });
   await expect(page.getByText('Authorization complete')).toBeVisible();
+  await expect(
+    page.getByRole('button', { name: 'Copy Runner recovery instruction' }),
+  ).toBeVisible();
+  await page.getByRole('button', { name: 'Copy Runner recovery instruction' }).click();
+  await expect(page.getByRole('button', { name: 'Recovery instruction copied' })).toBeVisible();
   expect(await page.locator('body').textContent()).not.toContain(exchanged.credential);
   expect(signedIn.user.displayName).toBe('Pairing UI');
+});
+
+test('simultaneous readiness is serialized into one conflict start', async ({ request }) => {
+  const suffix = `ready-${unique()}`;
+  const alice = await user(request, 'Ready Alice', suffix);
+  const bob = await user(request, 'Ready Bob', suffix);
+  const created = await body(
+    await request.post('/api/v1/conflicts', {
+      headers: headers(alice.id),
+      data: {
+        title: `Concurrent readiness ${suffix}`,
+        description: 'Both participants may become ready at the same time.',
+        protocol_type: 'debate',
+        max_rounds: 3,
+      },
+    }),
+  );
+  const id = created.conflict.id;
+  const invitation = await body(
+    await request.post(`/api/v1/conflicts/${id}/invite`, {
+      headers: headers(alice.id),
+      data: {},
+    }),
+  );
+  await body(
+    await request.post(`/api/v1/invites/${invitation.invite.url.split('/').at(-1)}/accept`, {
+      headers: headers(bob.id),
+      data: {},
+    }),
+  );
+  await body(
+    await request.post(`/api/v1/conflicts/${id}/agent/pairings`, {
+      headers: headers(alice.id),
+      data: { agent_name: 'Ready Alice Agent' },
+    }),
+  );
+  await body(
+    await request.post(`/api/v1/conflicts/${id}/agent/pairings`, {
+      headers: headers(bob.id),
+      data: { agent_name: 'Ready Bob Agent' },
+    }),
+  );
+
+  const [aliceReady, bobReady] = await Promise.all([
+    request.post(`/api/v1/conflicts/${id}/ready`, {
+      headers: headers(alice.id),
+      data: { ready: true },
+    }),
+    request.post(`/api/v1/conflicts/${id}/ready`, {
+      headers: headers(bob.id),
+      data: { ready: true },
+    }),
+  ]);
+  expect(aliceReady.ok(), await aliceReady.text()).toBeTruthy();
+  expect(bobReady.ok(), await bobReady.text()).toBeTruthy();
+
+  const state = await body(
+    await request.get(`/api/v1/conflicts/${id}`, { headers: headers(alice.id) }),
+  );
+  const transcript = await body(
+    await request.get(`/api/v1/conflicts/${id}/events`, { headers: headers(alice.id) }),
+  );
+  const sequences = transcript.events.map((event: any) => event.sequenceNumber);
+  expect(state.status).toBe('active');
+  expect(new Set(sequences).size).toBe(sequences.length);
+  expect(
+    transcript.events.filter((event: any) => event.eventType === 'conflict_started'),
+  ).toHaveLength(1);
+  expect(
+    transcript.events.filter((event: any) => event.eventType === 'phase_started'),
+  ).toHaveLength(1);
 });
 
 test('an idle agent can be deleted through the guarded developer flow', async ({ page }) => {
@@ -268,9 +344,78 @@ test('an idle agent can be deleted through the guarded developer flow', async ({
   await expect(page.getByRole('heading', { name: agent.agent.name })).toBeVisible();
   await page.getByText('Developer options').click();
   await page.getByRole('button', { name: 'Delete agent' }).click();
-  await expect(page.getByRole('heading', { name: `Delete ${agent.agent.name}?` })).toBeVisible();
-  await page.getByRole('dialog').getByRole('button', { name: 'Delete agent' }).click();
+  const dialog = page.getByRole('dialog');
+  await expect(
+    dialog.getByRole('heading', { name: `Remove ${agent.agent.name} safely` }),
+  ).toBeVisible();
+  await expect(
+    dialog.getByRole('button', { name: 'Copy local cleanup instruction' }),
+  ).toBeEnabled();
+  await dialog.getByRole('checkbox').check();
+  await dialog.getByRole('button', { name: 'Remove permanently' }).click();
   await expect(page.getByRole('heading', { name: agent.agent.name })).toHaveCount(0);
+});
+
+test('a participant can remove a broken agent and immediately create a fresh pairing', async ({
+  page,
+}) => {
+  const suffix = unique();
+  await body(
+    await page.request.post('/api/v1/auth/development', {
+      data: { email: `replace.ui.${suffix}@example.test`, display_name: 'Replace UI' },
+    }),
+  );
+  const created = await body(
+    await page.request.post('/api/v1/conflicts', {
+      data: {
+        title: `Replace a broken Runner ${suffix}`,
+        description: 'Verify safe removal and fresh pairing from the conflict room.',
+        protocol_type: 'debate',
+        max_rounds: 3,
+      },
+    }),
+  );
+
+  await page.goto(`/conflicts/${created.conflict.id}`);
+  await page.getByRole('button', { name: 'Connect Runner' }).click();
+  const firstCode = (await page.locator('.pairing-code strong').textContent())?.trim();
+  expect(firstCode).toMatch(/^[A-HJ-NP-Z2-9]{4}(?:-[A-HJ-NP-Z2-9]{4}){2}$/);
+  const firstState = await body(await page.request.get(`/api/v1/conflicts/${created.conflict.id}`));
+  const firstParty = firstState.parties.find((party: any) => party.role === firstState.your_party);
+  expect(firstParty.agent_id).toBeTruthy();
+
+  await page.getByRole('button', { name: 'Close dialog' }).click();
+  await page.getByRole('button', { name: 'Remove agent' }).click();
+  const confirmation = page.getByRole('dialog');
+  await expect(confirmation.getByRole('heading', { name: /Remove .* safely/ })).toBeVisible();
+  await expect(confirmation.getByText(/stops the background service/)).toBeVisible();
+  await confirmation.getByRole('checkbox').check();
+  await confirmation.getByRole('button', { name: 'Remove permanently' }).click();
+
+  await expect(page.getByRole('button', { name: 'Connect Runner' })).toBeVisible();
+  await expect
+    .poll(async () => {
+      const state = await body(await page.request.get(`/api/v1/conflicts/${created.conflict.id}`));
+      return state.parties.find((party: any) => party.role === state.your_party)?.agent_bound;
+    })
+    .toBe(false);
+  const removedState = await body(
+    await page.request.get(`/api/v1/conflicts/${created.conflict.id}`),
+  );
+  const removedParty = removedState.parties.find(
+    (party: any) => party.role === removedState.your_party,
+  );
+  expect(removedParty).toMatchObject({ agent_bound: false, ready: false });
+  expect(removedParty.agent_id).toBeUndefined();
+
+  await page.getByRole('button', { name: 'Connect Runner' }).click();
+  const freshCode = (await page.locator('.pairing-code strong').textContent())?.trim();
+  expect(freshCode).toMatch(/^[A-HJ-NP-Z2-9]{4}(?:-[A-HJ-NP-Z2-9]{4}){2}$/);
+  expect(freshCode).not.toBe(firstCode);
+  const freshState = await body(await page.request.get(`/api/v1/conflicts/${created.conflict.id}`));
+  const freshParty = freshState.parties.find((party: any) => party.role === freshState.your_party);
+  expect(freshParty.agent_id).toBeTruthy();
+  expect(freshParty.agent_id).not.toBe(firstParty.agent_id);
 });
 
 test('complete debate persists and renders a polished verdict', async ({ page, request }) => {

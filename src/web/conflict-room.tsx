@@ -23,6 +23,8 @@ import {
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { api } from './api';
+import { copyText } from './clipboard';
+import { AgentRemovalDialog } from './agent-removal';
 import {
   AppShell,
   ConfirmDialog,
@@ -213,6 +215,12 @@ export function ConflictRoomPage() {
         </header>
         <ParticipantStrip parties={c.parties} />
         <ProtocolProgress phase={c.phase} status={c.status} judgeAvailable={c.judge_available} />
+        <p className="protocol-explainer">
+          3 phases · 2 turns each · 6 total statements. After both closing statements,{' '}
+          {c.judge_available
+            ? 'the advisory Judge evaluates the completed record.'
+            : 'the conflict closes as a completed record without a verdict.'}
+        </p>
         <div className="room-grid">
           <section className="record-column">
             <div className="room-tabs" role="tablist" aria-label="Conflict sections">
@@ -281,8 +289,14 @@ export function ConflictRoomPage() {
             )}
           </section>
           <aside className="context-rail">
-            <TurnCard conflict={c} />
-            <AgentCard id={id!} party={yours} agents={data.agents} load={load} />
+            <TurnCard conflict={c} id={id!} load={load} />
+            <AgentCard
+              id={id!}
+              conflictStatus={c.status}
+              party={yours}
+              agents={data.agents}
+              load={load}
+            />
             <section className="rail-section">
               <div className="rail-label">
                 PRIVATE BRIEF <span>{data.brief ? 'SAVED' : 'NOT STARTED'}</span>
@@ -315,7 +329,7 @@ export function ConflictRoomPage() {
                 <input readOnly value={invite.url} />
                 <button
                   className="icon-button"
-                  onClick={() => void navigator.clipboard.writeText(invite.url)}
+                  onClick={() => void copyText(invite.url)}
                   aria-label="Copy invitation"
                 >
                   <Copy />
@@ -389,9 +403,10 @@ function ProtocolProgress({
   status: string;
   judgeAvailable: boolean;
 }) {
-  const items = ['opening', 'rebuttal', 'closing', ...(judgeAvailable ? ['verdict'] : [])];
-  const current = status === 'resolved' && judgeAvailable ? 'verdict' : (phase ?? 'opening');
-  const index = status === 'resolved' && !judgeAvailable ? items.length : items.indexOf(current);
+  const finalStep = judgeAvailable ? 'assessment' : 'complete';
+  const items = ['opening', 'rebuttal', 'closing', finalStep];
+  const current = status === 'judging' || status === 'resolved' ? finalStep : (phase ?? 'opening');
+  const index = status === 'resolved' ? items.length : Math.max(0, items.indexOf(current));
   return (
     <section className="protocol-progress" aria-label="Protocol progress">
       {items.map((item, i) => (
@@ -425,9 +440,31 @@ function ConnectionState({ state }: { state: string }) {
     </span>
   );
 }
-function TurnCard({ conflict: c }: { conflict: any }) {
+function TurnCard({
+  conflict: c,
+  id,
+  load,
+}: {
+  conflict: any;
+  id: string;
+  load: () => Promise<void>;
+}) {
   const turn = c.current_turn;
   const party = turn ? c.parties.find((p: any) => p.id === turn.party_id) : null;
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const complete = async () => {
+    setBusy(true);
+    setError('');
+    try {
+      await api(`/conflicts/${id}/complete`, { method: 'POST' });
+      await load();
+    } catch (value) {
+      setError(value instanceof Error ? value.message : 'Could not complete this conflict.');
+    } finally {
+      setBusy(false);
+    }
+  };
   return (
     <section className="rail-section">
       <div className="rail-label">CURRENT STATE</div>
@@ -440,7 +477,10 @@ function TurnCard({ conflict: c }: { conflict: any }) {
               </span>
               <span>
                 <strong>{party?.display_name}’s agent</strong>
-                <small>Owns the {c.phase} turn</small>
+                <small>
+                  Phase {Math.max(1, ['opening', 'rebuttal', 'closing'].indexOf(c.phase) + 1)} of 3
+                  · owns the {c.phase} turn
+                </small>
               </span>
               <i />
             </div>
@@ -455,16 +495,35 @@ function TurnCard({ conflict: c }: { conflict: any }) {
               {c.status === 'resolved'
                 ? c.judge_available
                   ? 'Assessment complete'
-                  : 'Exchange complete'
+                  : 'Conflict complete'
                 : c.status === 'judging'
                   ? c.judge_available
                     ? 'Judge is evaluating'
-                    : 'Exchange complete'
+                    : 'Ready to complete'
                   : c.status === 'briefing'
                     ? 'Waiting for both participants'
                     : c.status.replaceAll('_', ' ')}
             </strong>
-            <p>No agent action is currently accepted.</p>
+            <p>
+              {c.status === 'resolved'
+                ? c.judge_available
+                  ? 'The six-turn exchange and advisory assessment are finished.'
+                  : 'The six-turn exchange is closed. No verdict was generated.'
+                : c.status === 'judging' && !c.judge_available
+                  ? 'This is a conflict completed before record-only finalization was enabled. Close it now without a verdict.'
+                  : 'No agent action is currently accepted.'}
+            </p>
+            {c.status === 'judging' && !c.judge_available && (
+              <button className="button wide" disabled={busy} onClick={() => void complete()}>
+                {busy ? <LoaderCircle className="spin" /> : <Check />}
+                Complete conflict
+              </button>
+            )}
+            {error && (
+              <p className="form-error" role="alert">
+                {error}
+              </p>
+            )}
           </>
         )}
       </div>
@@ -473,19 +532,23 @@ function TurnCard({ conflict: c }: { conflict: any }) {
 }
 function AgentCard({
   id,
+  conflictStatus,
   party,
   agents,
   load,
 }: {
   id: string;
+  conflictStatus: string;
   party: any;
   agents: any[];
   load: () => Promise<void>;
 }) {
   const [busy, setBusy] = useState(false);
+  const [removeOpen, setRemoveOpen] = useState(false);
   const [pairing, setPairing] = useState<any>(null);
   const [pairingError, setPairingError] = useState('');
   const [copied, setCopied] = useState(false);
+  const [copiedRecovery, setCopiedRecovery] = useState(false);
   const bind = async (agentId: string) => {
     setBusy(true);
     await api(`/conflicts/${id}/agent`, {
@@ -499,6 +562,7 @@ function AgentCard({
     setBusy(true);
     setPairingError('');
     setCopied(false);
+    setCopiedRecovery(false);
     try {
       const value = await api<any>(`/conflicts/${id}/agent/pairings`, {
         method: 'POST',
@@ -533,6 +597,7 @@ function AgentCard({
     await load();
     setBusy(false);
   };
+  const canRemove = !['active', 'paused', 'judging'].includes(conflictStatus);
   return (
     <section className="rail-section">
       <div className="rail-label">
@@ -637,6 +702,15 @@ function AgentCard({
             </Link>
           </>
         )}
+        {party.agent_bound && canRemove && (
+          <button
+            className="agent-developer-link agent-remove-link"
+            disabled={busy}
+            onClick={() => setRemoveOpen(true)}
+          >
+            <Unplug /> Remove agent
+          </button>
+        )}
       </div>
       <Dialog
         open={Boolean(pairing)}
@@ -667,6 +741,11 @@ function AgentCard({
                 3 · Connected
               </li>
             </ol>
+            {pairingError && (
+              <p className="form-error" role="alert">
+                {pairingError}
+              </p>
+            )}
             {pairing.pairing.status === 'connected' && party.runner?.online ? (
               <div className="pairing-success">
                 <span>
@@ -695,6 +774,29 @@ function AgentCard({
                   Codex is installing and starting the local Runner. This normally takes less than a
                   minute; the page will update automatically.
                 </p>
+                <p>
+                  If Codex reported an installation or startup error, finish the setup with the
+                  recovery instruction below. The credential is already stored, so this does not
+                  need or consume another pairing code.
+                </p>
+                <button
+                  className="button secondary wide"
+                  onClick={async () => {
+                    try {
+                      await copyText(pairing.recovery_instruction);
+                      setCopiedRecovery(true);
+                    } catch (error) {
+                      setPairingError(
+                        error instanceof Error ? error.message : 'Could not copy the instruction.',
+                      );
+                    }
+                  }}
+                >
+                  {copiedRecovery ? <Check /> : <Copy />}
+                  {copiedRecovery
+                    ? 'Recovery instruction copied'
+                    : 'Copy Runner recovery instruction'}
+                </button>
               </div>
             ) : pairing.pairing.status === 'waiting' ? (
               <>
@@ -706,8 +808,14 @@ function AgentCard({
                 <button
                   className="button large wide"
                   onClick={async () => {
-                    await navigator.clipboard.writeText(pairing.instruction);
-                    setCopied(true);
+                    try {
+                      await copyText(pairing.instruction);
+                      setCopied(true);
+                    } catch (error) {
+                      setPairingError(
+                        error instanceof Error ? error.message : 'Could not copy the instruction.',
+                      );
+                    }
                   }}
                 >
                   {copied ? <Check /> : <Copy />}
@@ -738,6 +846,23 @@ function AgentCard({
           </div>
         )}
       </Dialog>
+      <AgentRemovalDialog
+        open={removeOpen}
+        agent={
+          party.agent_id
+            ? {
+                id: party.agent_id,
+                name: agents.find((agent) => agent.id === party.agent_id)?.name ?? 'this agent',
+              }
+            : null
+        }
+        onClose={() => setRemoveOpen(false)}
+        onRemoved={async () => {
+          setPairing(null);
+          setPairingError('');
+          await load();
+        }}
+      />
     </section>
   );
 }
@@ -943,7 +1068,7 @@ function SettingsPanel({
   const create = async () => {
     setCreating(true);
     const value = await api<any>(`/conflicts/${id}/share-links`, { method: 'POST', body: '{}' });
-    await navigator.clipboard.writeText(value.share_link.url);
+    await copyText(value.share_link.url);
     await load();
     setCreating(false);
   };

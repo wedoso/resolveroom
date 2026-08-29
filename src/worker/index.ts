@@ -334,16 +334,35 @@ function emailProvider(env: Env): EmailProvider {
 
 export class ConflictRoom extends DurableObject<Env> {
   private sockets = new Set<WebSocket>();
+  private mutationQueue: Promise<void> = Promise.resolve();
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
+  }
+  private async serializeMutation<T>(work: () => Promise<T>): Promise<T> {
+    const previous = this.mutationQueue;
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const queued = previous.then(() => current);
+    this.mutationQueue = queued;
+    await previous;
+    try {
+      return await work();
+    } finally {
+      release();
+      if (this.mutationQueue === queued) this.mutationQueue = Promise.resolve();
+    }
   }
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     if (url.pathname === '/internal/dispatch' && request.method === 'POST') {
       const body = (await request.json()) as { conflict_id?: string };
       if (!body.conflict_id) return new Response('Bad request', { status: 400 });
-      await this.dispatchCurrentTurn(body.conflict_id);
-      return new Response(null, { status: 204 });
+      return this.serializeMutation(async () => {
+        await this.dispatchCurrentTurn(body.conflict_id!);
+        return new Response(null, { status: 204 });
+      });
     }
     if (url.pathname === '/internal/alarm') {
       const conflictId = url.searchParams.get('conflict_id');
@@ -364,23 +383,33 @@ export class ConflictRoom extends DurableObject<Env> {
       server.send(JSON.stringify({ type: 'connected', at: new Date().toISOString() }));
       return new Response(null, { status: 101, webSocket: client });
     }
-    const api = createApi(new D1Store(this.env.DB), apiOptions(this.env));
-    const response = await api.fetch(request, this.env as any);
-    if (response.ok && request.method !== 'GET') {
-      let conflictId = url.pathname.match(/^\/api\/v1\/conflicts\/([^/]+)/)?.[1];
-      const inviteToken = url.pathname.match(/^\/api\/v1\/invites\/([^/]+)\/accept$/)?.[1];
-      if (!conflictId && inviteToken)
-        conflictId = (await new D1Store(this.env.DB).findInvitation(await sha256(inviteToken)))
-          ?.conflictId;
-      if (conflictId) await this.scheduleAlarm(conflictId);
-      if (conflictId) await this.dispatchCurrentTurn(conflictId);
-      this.broadcast();
-    }
-    return response;
+    const handleApiRequest = async () => {
+      const api = createApi(new D1Store(this.env.DB), apiOptions(this.env));
+      const response = await api.fetch(request, this.env as any);
+      if (response.ok && request.method !== 'GET') {
+        let conflictId = url.pathname.match(/^\/api\/v1\/conflicts\/([^/]+)/)?.[1];
+        const inviteToken = url.pathname.match(/^\/api\/v1\/invites\/([^/]+)\/accept$/)?.[1];
+        if (!conflictId && inviteToken)
+          conflictId = (await new D1Store(this.env.DB).findInvitation(await sha256(inviteToken)))
+            ?.conflictId;
+        if (conflictId) await this.scheduleAlarm(conflictId);
+        if (conflictId) await this.dispatchCurrentTurn(conflictId);
+        this.broadcast();
+      }
+      return response;
+    };
+    return request.method === 'GET' ? handleApiRequest() : this.serializeMutation(handleApiRequest);
   }
   async alarm() {
+    await this.serializeMutation(() => this.runAlarm());
+  }
+  private async runAlarm() {
     const db = new D1Store(this.env.DB);
-    const conflicts = new ConflictService(db);
+    const conflicts = new ConflictService(
+      db,
+      new NotificationService(db, emailProvider(this.env)),
+      judgeEnabled(this.env),
+    );
     const conflictId = await this.ctx.storage.get<string>('conflictId');
     if (!conflictId) return;
     const result = await conflicts.handleAlarm(conflictId);

@@ -49,6 +49,7 @@ export const conflictEventTypes = [
   'conflict_paused',
   'conflict_resumed',
   'judging_started',
+  'conflict_resolved',
   'verdict_issued',
   'conflict_cancelled',
   'conflict_expired',
@@ -182,6 +183,7 @@ export type NotificationType =
   | 'your_turn'
   | 'conflict_paused'
   | 'judging_started'
+  | 'conflict_resolved'
   | 'verdict_ready'
   | 'conflict_cancelled'
   | 'conflict_expired';

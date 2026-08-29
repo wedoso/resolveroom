@@ -4,7 +4,14 @@ import { MemoryDatabase } from '@/persistence/memory';
 
 async function harness() {
   const db = new MemoryDatabase();
-  const app = createApi(db, { allowDevelopmentAuth: true, appUrl: 'http://agents.test' });
+  const disconnected: Array<{ agentId: string; reason: string }> = [];
+  const app = createApi(db, {
+    allowDevelopmentAuth: true,
+    appUrl: 'http://agents.test',
+    disconnectRunner: async (agentId, reason) => {
+      disconnected.push({ agentId, reason });
+    },
+  });
   const request = async (path: string, init: RequestInit = {}) => {
     const response = await app.request(`http://agents.test${path}`, {
       ...init,
@@ -19,7 +26,7 @@ async function harness() {
     })
   ).body.user;
   const headers = { 'x-dev-user-id': user.id };
-  return { db, request, headers };
+  return { db, request, headers, disconnected };
 }
 
 describe('agent lifecycle', () => {
@@ -55,6 +62,34 @@ describe('agent lifecycle', () => {
         })
       ).response.status,
     ).toBe(401);
+  });
+
+  it('returns a same-origin credential-free local cleanup instruction', async () => {
+    const h = await harness();
+    const agent = (
+      await h.request('/api/v1/agents', {
+        method: 'POST',
+        headers: h.headers,
+        body: JSON.stringify({ name: 'Cleanup Agent' }),
+      })
+    ).body.agent;
+    const value = await h.request(`/api/v1/agents/${agent.id}/local-cleanup`, {
+      headers: h.headers,
+    });
+    expect(value.response.status).toBe(200);
+    expect(value.body.scope).toMatchObject({
+      origin: 'http://agents.test',
+      server_agent_deleted: false,
+    });
+    expect(value.body.codex_runtime.arguments.slice(-4)).toEqual([
+      'runner',
+      'uninstall',
+      '--origin',
+      'http://agents.test',
+    ]);
+    expect(value.body.instruction).toContain('background service');
+    expect(JSON.stringify(value.body)).not.toContain('rr_agent_');
+    expect(JSON.stringify(value.body)).not.toContain('github.com');
   });
 
   it('blocks deletion while the agent is assigned to an active conflict', async () => {
@@ -94,6 +129,88 @@ describe('agent lifecycle', () => {
     });
     expect(deleted.response.status).toBe(409);
     expect(deleted.body.error.code).toBe('INVALID_STATE');
+    const cleanup = await h.request(`/api/v1/agents/${agent.id}/local-cleanup`, {
+      headers: h.headers,
+    });
+    expect(cleanup.response.status).toBe(409);
     expect((await h.db.getAgent(agent.id))?.status).toBe('active');
+  });
+
+  it('atomically removes a paired agent from a pre-active conflict and permits fresh pairing', async () => {
+    const h = await harness();
+    const conflict = (
+      await h.request('/api/v1/conflicts', {
+        method: 'POST',
+        headers: h.headers,
+        body: JSON.stringify({
+          title: 'Replace representative',
+          description: 'Remove a broken Runner and pair a fresh one.',
+          protocol_type: 'debate',
+          max_rounds: 3,
+        }),
+      })
+    ).body.conflict;
+    const firstPairing = await h.request(`/api/v1/conflicts/${conflict.id}/agent/pairings`, {
+      method: 'POST',
+      headers: h.headers,
+      body: '{}',
+    });
+    const exchanged = await h.request('/api/v1/agent-pairings/exchange', {
+      method: 'POST',
+      body: JSON.stringify({ code: firstPairing.body.code, client_name: 'Old Runner' }),
+    });
+    const pendingPairing = await h.request(`/api/v1/conflicts/${conflict.id}/agent/pairings`, {
+      method: 'POST',
+      headers: h.headers,
+      body: '{}',
+    });
+
+    const removed = await h.request(`/api/v1/agents/${firstPairing.body.agent.id}`, {
+      method: 'DELETE',
+      headers: h.headers,
+    });
+    expect(removed.response.status).toBe(204);
+    expect(h.disconnected).toContainEqual({
+      agentId: firstPairing.body.agent.id,
+      reason: 'credential_rotated',
+    });
+    expect(h.disconnected).toContainEqual({
+      agentId: firstPairing.body.agent.id,
+      reason: 'agent_deleted',
+    });
+    expect(
+      (
+        await h.request('/api/v1/agent/tasks', {
+          headers: { authorization: `Bearer ${exchanged.body.credential}` },
+        })
+      ).response.status,
+    ).toBe(401);
+    expect(
+      (
+        await h.request(`/api/v1/agent-pairings/${pendingPairing.body.pairing.id}`, {
+          headers: h.headers,
+        })
+      ).response.status,
+    ).toBe(200);
+    expect(
+      (
+        await h.request(`/api/v1/agent-pairings/${pendingPairing.body.pairing.id}`, {
+          headers: h.headers,
+        })
+      ).body.pairing.status,
+    ).toBe('revoked');
+    const state = await h.request(`/api/v1/conflicts/${conflict.id}`, { headers: h.headers });
+    const ownParty = state.body.parties.find((party: any) => party.role === state.body.your_party);
+    expect(ownParty).toMatchObject({ agent_bound: false, ready: false });
+    expect(ownParty.agent_id).toBeUndefined();
+
+    const freshPairing = await h.request(`/api/v1/conflicts/${conflict.id}/agent/pairings`, {
+      method: 'POST',
+      headers: h.headers,
+      body: '{}',
+    });
+    expect(freshPairing.response.status).toBe(201);
+    expect(freshPairing.body.agent.id).not.toBe(firstPairing.body.agent.id);
+    expect(freshPairing.body.code).not.toBe(firstPairing.body.code);
   });
 });

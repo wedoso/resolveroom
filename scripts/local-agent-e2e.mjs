@@ -2,10 +2,11 @@
 
 import { spawn, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import process from 'node:process';
 
 const repository = resolve(import.meta.dirname, '..');
@@ -15,6 +16,8 @@ const temporaryRoot = mkdtempSync(join(tmpdir(), 'resolveroom-agent-e2e-'));
 const persistence = join(temporaryRoot, 'wrangler-state');
 const clientAConfig = join(temporaryRoot, 'client-a');
 const clientBConfig = join(temporaryRoot, 'client-b');
+const forbiddenToolDirectory = join(temporaryRoot, 'forbidden-tools');
+const forbiddenToolMarker = join(temporaryRoot, 'forbidden-tool-called');
 let worker;
 let workerLog = '';
 const runners = [];
@@ -54,8 +57,13 @@ async function availablePort() {
 function clientEnvironment(configRoot) {
   return {
     ...process.env,
+    PATH: forbiddenToolDirectory,
     XDG_CONFIG_HOME: configRoot,
+    RESOLVEROOM_RUNNER_ROOT: join(configRoot, 'runner'),
     RESOLVEROOM_CREDENTIAL_STORE: 'file',
+    RESOLVEROOM_RUNNER_PROVIDER: 'mock',
+    RESOLVEROOM_RUNNER_SERVICE_MODE: 'detached',
+    npm_config_offline: 'true',
   };
 }
 
@@ -67,22 +75,54 @@ function runAgent(configRoot, origin, args, input) {
   return JSON.parse(output);
 }
 
-function startAgentRunner(configRoot, origin, label) {
-  const child = spawn(process.execPath, [agentCli, 'runner', 'start', '--origin', origin], {
+function rememberService(value, label) {
+  const service = value.service ?? value.installed?.service;
+  const pid = Number(String(service ?? '').replace(/^pid:/, ''));
+  assert(Number.isSafeInteger(pid) && pid > 0, `${label} did not return a detached Runner PID.`);
+  const runner = { pid, label };
+  runners.push(runner);
+  return runner;
+}
+
+function runBootstrap(configRoot, args, label) {
+  const result = spawnSync(process.execPath, args, {
     cwd: repository,
-    detached: process.platform !== 'win32',
+    encoding: 'utf8',
+    env: clientEnvironment(configRoot),
+  });
+  if (result.status !== 0) {
+    let runnerLog = '';
+    try {
+      runnerLog = readFileSync(join(configRoot, 'runner', 'runner.log'), 'utf8').slice(-8_000);
+    } catch {
+      // A pre-install failure has no Runner log.
+    }
+    throw new Error(
+      `${label} bootstrap failed (${result.status}).\n${result.stdout}\n${result.stderr}\n${runnerLog}`,
+    );
+  }
+  const value = JSON.parse(result.stdout);
+  rememberService(value, label);
+  return value;
+}
+
+function runNetworkDeniedBootstrap(configRoot, args, denyNetworkModule) {
+  const result = spawnSync(process.execPath, args, {
+    cwd: repository,
+    encoding: 'utf8',
     env: {
       ...clientEnvironment(configRoot),
-      RESOLVEROOM_RUNNER_PROVIDER: 'mock',
+      NODE_OPTIONS: `--import=${pathToFileURL(denyNetworkModule).href}`,
     },
-    stdio: ['ignore', 'pipe', 'pipe'],
   });
-  const value = { child, label, log: '' };
-  for (const stream of [child.stdout, child.stderr])
-    stream.on('data', (chunk) => {
-      value.log = `${value.log}${chunk.toString()}`.slice(-8_000);
-    });
-  runners.push(value);
+  assert(result.status === 69, `Restricted bootstrap exited with ${result.status}.`);
+  const value = JSON.parse(result.stdout);
+  assert(value.error === 'network_access_required', 'Restricted bootstrap hid its DNS cause.');
+  assert(
+    value.pairing_consumed === false,
+    'Restricted bootstrap reported the pairing as consumed.',
+  );
+  assert(value.retry_same_arguments === true, 'Restricted bootstrap did not permit a safe retry.');
   return value;
 }
 
@@ -94,8 +134,7 @@ async function waitForRunnerOnline(origin, headers, agentId) {
     if (agent?.runner?.online) return agent.runner;
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 200));
   }
-  const logs = runners.map((runner) => `${runner.label}:\n${runner.log}`).join('\n');
-  throw new Error(`Runners did not report online.\n${logs}`);
+  throw new Error('Runners did not report online.');
 }
 
 async function waitForRunnerOffline(origin, headers, agentId) {
@@ -169,26 +208,48 @@ async function stopWorker() {
 }
 
 async function stopRunners() {
+  for (const configRoot of [clientAConfig, clientBConfig]) {
+    try {
+      const pid = Number(readFileSync(join(configRoot, 'runner', 'service.pid'), 'utf8'));
+      if (Number.isSafeInteger(pid) && !runners.some((runner) => runner.pid === pid))
+        runners.push({ pid, label: 'unconfirmed installed Runner' });
+    } catch {
+      // A client that failed before service installation has no PID file.
+    }
+  }
   for (const runner of runners) await stopRunner(runner);
   await new Promise((resolvePromise) => setTimeout(resolvePromise, 200));
 }
 
-async function stopRunner({ child }) {
-  if (!child.pid || child.exitCode !== null || child.signalCode !== null) return;
-  const exited = new Promise((resolvePromise) => child.once('exit', resolvePromise));
+async function stopRunner({ pid }) {
+  if (!pid) return;
   try {
-    if (process.platform === 'win32') child.kill('SIGTERM');
-    else process.kill(-child.pid, 'SIGTERM');
+    process.kill(process.platform === 'win32' ? pid : -pid, 'SIGTERM');
   } catch (error) {
     if (error?.code !== 'ESRCH') throw error;
     return;
   }
-  await Promise.race([exited, new Promise((resolvePromise) => setTimeout(resolvePromise, 3_000))]);
+  await new Promise((resolvePromise) => setTimeout(resolvePromise, 300));
 }
 
 async function main() {
+  mkdirSync(forbiddenToolDirectory, { recursive: true });
+  if (process.platform !== 'win32') {
+    for (const tool of ['curl', 'git', 'npm', 'npx', 'pnpm'])
+      writeFileSync(
+        join(forbiddenToolDirectory, tool),
+        `#!/bin/sh\nprintf '%s\\n' '${tool}' >> '${forbiddenToolMarker}'\nexit 97\n`,
+        { mode: 0o700 },
+      );
+  }
   const port = await availablePort();
   const origin = `http://localhost:${port}`;
+  const denyNetworkModule = join(temporaryRoot, 'deny-network.mjs');
+  writeFileSync(
+    denyNetworkModule,
+    `globalThis.fetch = async () => { const error = new Error('getaddrinfo ENOTFOUND resolveroom.test'); error.cause = { code: 'ENOTFOUND' }; throw error; };\n`,
+    { mode: 0o600 },
+  );
   run(process.execPath, [
     wrangler,
     'd1',
@@ -303,15 +364,31 @@ async function main() {
     headers: bobHeaders,
     body: JSON.stringify({ agent_name: 'Bob local Codex' }),
   });
-  const pairedA = runAgent(clientAConfig, origin, ['pair', pairingA.code]);
-  const pairedB = runAgent(clientBConfig, origin, ['pair', pairingB.code]);
-  assert(pairedA.connected && pairedA.task_assigned, 'Alice CLI pairing was not confirmed.');
-  assert(pairedB.connected && pairedB.task_assigned, 'Bob CLI pairing was not confirmed.');
+  const denied = runNetworkDeniedBootstrap(
+    clientAConfig,
+    pairingA.codex_runtime.arguments,
+    denyNetworkModule,
+  );
+  assert(denied.required_origin === origin, 'Restricted bootstrap returned the wrong origin.');
+  const unconsumed = await json(origin, `/agent-pairings/${pairingA.pairing.id}`, {
+    headers: aliceHeaders,
+  });
+  assert(unconsumed.pairing.status === 'waiting', 'DNS denial consumed the pairing code.');
+  const pairedA = runBootstrap(
+    clientAConfig,
+    pairingA.codex_runtime.arguments,
+    'Alice installed Runner',
+  );
+  const pairedB = runBootstrap(
+    clientBConfig,
+    pairingB.codex_runtime.arguments,
+    'Bob installed Runner',
+  );
+  assert(pairedA.connected && pairedA.runner_online, 'Alice CLI connection was not confirmed.');
+  assert(pairedB.connected && pairedB.runner_online, 'Bob CLI connection was not confirmed.');
   assert(pairedA.conflict_id === conflict.id, 'Alice pairing returned the wrong conflict.');
   assert(pairedB.conflict_id === conflict.id, 'Bob pairing returned the wrong conflict.');
 
-  const aliceRunnerProcess = startAgentRunner(clientAConfig, origin, 'Alice Runner');
-  startAgentRunner(clientBConfig, origin, 'Bob Runner');
   const runnerA = await waitForRunnerOnline(origin, aliceHeaders, pairedA.agent.id);
   const runnerB = await waitForRunnerOnline(origin, bobHeaders, pairedB.agent.id);
   assert(runnerA.state === 'online', `Alice Runner state is ${runnerA.state}.`);
@@ -337,7 +414,7 @@ async function main() {
   assert(serializedB.includes(bobSecret), 'Bob could not access his private brief.');
   assert(!serializedB.includes(aliceSecret), 'Bob received Alice private brief data.');
 
-  await stopRunner(aliceRunnerProcess);
+  await stopRunner(runners[0]);
   const disconnected = await waitForRunnerOffline(origin, aliceHeaders, pairedA.agent.id);
   assert(
     ['reconnecting', 'reconnect_required'].includes(disconnected.state),
@@ -356,7 +433,12 @@ async function main() {
   });
   assert(started.started === true, 'The conflict did not start after both parties became ready.');
 
-  startAgentRunner(clientAConfig, origin, 'Alice reconnected Runner');
+  const recoveredA = runBootstrap(
+    clientAConfig,
+    pairingA.codex_runtime.recovery_arguments,
+    'Alice recovered Runner',
+  );
+  assert(recoveredA.runner?.online, 'Alice recovery command did not confirm the Runner online.');
   await waitForRunnerOnline(origin, aliceHeaders, pairedA.agent.id);
 
   const resolutionDeadline = Date.now() + 30_000;
@@ -386,9 +468,10 @@ async function main() {
     ),
   );
   assert(actions.length === 6, `Expected six debate actions, received ${actions.length}.`);
+  assert(!existsSync(forbiddenToolMarker), 'The same-origin bootstrap invoked a forbidden tool.');
 
   process.stdout.write(
-    `${JSON.stringify({ passed: true, runners: 2, server_triggered: true, offline_queue_recovered: true, private_briefs_verified: 2, debate_turns: 6, final_status: finalState.status, judge: 'mock' }, null, 2)}\n`,
+    `${JSON.stringify({ passed: true, runners: 2, self_contained_bootstrap: true, github_and_package_managers_blocked: true, restricted_dns_failure_safe: true, pairing_survived_network_denial: true, approved_network_retry_succeeded: true, server_triggered: true, offline_queue_recovered: true, private_briefs_verified: 2, debate_turns: 6, final_status: finalState.status, judge: 'mock' }, null, 2)}\n`,
   );
 }
 

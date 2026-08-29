@@ -13,6 +13,7 @@ export default tseslint.config(
       'test-results',
       '.wrangler',
       '.superdesign/tmp',
+      'public/agent/resolveroom.mjs',
     ],
   },
   js.configs.recommended,

@@ -334,52 +334,59 @@ export class D1Store implements Database {
         .first();
       if (x) return { event: eventFrom(x), duplicate: true };
     }
-    const sequence =
-      (await this.db
-        .prepare(
-          'SELECT COALESCE(MAX(sequence_number),0)+1 next FROM conflict_events WHERE conflict_id=?',
-        )
-        .bind(input.conflictId)
-        .first<number>('next')) ?? 1;
-    const event: ConflictEvent = {
-      ...input,
-      id: opaqueId('evt'),
-      sequenceNumber: sequence,
-      createdAt: new Date().toISOString(),
-      payload: {
-        ...input.payload,
-        ...(input.clientRequestId ? { client_request_id: input.clientRequestId } : {}),
-      },
-    };
-    try {
-      await this.db
-        .prepare('INSERT INTO conflict_events VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')
-        .bind(
-          event.id,
-          event.conflictId,
-          event.sequenceNumber,
-          event.eventType,
-          event.actorType,
-          event.actorId,
-          event.partyId,
-          event.partyRole,
-          event.visibility,
-          JSON.stringify(event.payload),
-          input.clientRequestId ?? null,
-          event.createdAt,
-        )
-        .run();
-      return { event, duplicate: false };
-    } catch (error) {
-      if (input.clientRequestId) {
-        const x = await this.db
-          .prepare('SELECT * FROM conflict_events WHERE conflict_id=? AND client_request_id=?')
-          .bind(input.conflictId, input.clientRequestId)
-          .first();
-        if (x) return { event: eventFrom(x), duplicate: true };
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const sequence =
+        (await this.db
+          .prepare(
+            'SELECT COALESCE(MAX(sequence_number),0)+1 next FROM conflict_events WHERE conflict_id=?',
+          )
+          .bind(input.conflictId)
+          .first<number>('next')) ?? 1;
+      const event: ConflictEvent = {
+        ...input,
+        id: opaqueId('evt'),
+        sequenceNumber: sequence,
+        createdAt: new Date().toISOString(),
+        payload: {
+          ...input.payload,
+          ...(input.clientRequestId ? { client_request_id: input.clientRequestId } : {}),
+        },
+      };
+      try {
+        await this.db
+          .prepare('INSERT INTO conflict_events VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')
+          .bind(
+            event.id,
+            event.conflictId,
+            event.sequenceNumber,
+            event.eventType,
+            event.actorType,
+            event.actorId,
+            event.partyId,
+            event.partyRole,
+            event.visibility,
+            JSON.stringify(event.payload),
+            input.clientRequestId ?? null,
+            event.createdAt,
+          )
+          .run();
+        return { event, duplicate: false };
+      } catch (error) {
+        if (input.clientRequestId) {
+          const x = await this.db
+            .prepare('SELECT * FROM conflict_events WHERE conflict_id=? AND client_request_id=?')
+            .bind(input.conflictId, input.clientRequestId)
+            .first();
+          if (x) return { event: eventFrom(x), duplicate: true };
+        }
+        const sequenceRace =
+          String(error).includes('UNIQUE constraint failed') &&
+          String(error).includes('conflict_events.sequence_number');
+        if (sequenceRace && attempt < 4) continue;
+        throw error;
       }
-      throw error;
     }
+    throw new Error('Could not allocate a conflict event sequence number.');
   }
   async listEvents(cid: string) {
     const r = await this.db
