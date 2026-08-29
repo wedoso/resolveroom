@@ -21,6 +21,20 @@ updates:
       - dependency-name: typescript
         update-types:
           - version-update:semver-major
+      # Vitest and its coverage provider require the same major version. Upgrade them together.
+      - dependency-name: vitest
+        update-types:
+          - version-update:semver-major
+      - dependency-name: '@vitest/coverage-v8'
+        update-types:
+          - version-update:semver-major
+      # ESLint and @eslint/js require matching major versions. Upgrade the lint stack together.
+      - dependency-name: eslint
+        update-types:
+          - version-update:semver-major
+      - dependency-name: '@eslint/js'
+        update-types:
+          - version-update:semver-major
 
   - package-ecosystem: github-actions
     directory: /
