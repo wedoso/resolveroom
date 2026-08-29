@@ -59,7 +59,7 @@
   "devDependencies": {
     "@axe-core/playwright": "^4.13.0",
     "@cloudflare/workers-types": "^5.20260826.1",
-    "@eslint/js": "^9.35.0",
+    "@eslint/js": "^10.0.1",
     "@playwright/test": "^1.55.0",
     "@remotion/cli": "^4.0.517",
     "@remotion/media": "^4.0.516",
