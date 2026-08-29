@@ -1,0 +1,15 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["action_type", "content"],
+  "properties": {
+    "action_type": {
+      "type": "string",
+      "enum": ["argument"]
+    },
+    "content": {
+      "type": "string",
+      "maxLength": 12000
+    }
+  }
+}

@@ -8,10 +8,18 @@ import {
   createConflictSchema,
   privateBriefSchema,
   type Agent,
+  type AgentPairing,
+  type AgentToken,
   type ConflictParty,
   type User,
 } from '@/domain/types';
-import { opaqueId, secureToken, sha256 } from '@/domain/security';
+import {
+  normalizePairingCode,
+  opaqueId,
+  securePairingCode,
+  secureToken,
+  sha256,
+} from '@/domain/security';
 import type { Database } from '@/persistence/database';
 import { ConflictService, filterEvents } from '@/services/conflicts';
 import { JudgeService } from '@/judge/service';
@@ -24,18 +32,77 @@ import {
   type OAuthProviderName,
 } from '@/auth/oauth';
 import { NotificationService, type EmailProvider } from '@/notifications/service';
+import { agentAssets } from '@/generated/agent-assets';
 
 type Identity = { kind: 'human'; user: User } | { kind: 'agent'; agent: Agent };
 type AppEnv = { Variables: { requestId: string; identity?: Identity } };
 type Options = {
   allowDevelopmentAuth?: boolean;
+  judgeEnabled?: boolean;
+  judgeMode?: 'disabled' | 'mock' | 'llm';
   judgeProvider?: JudgeProvider;
   appUrl?: string;
   secureCookies?: boolean;
   oauth?: Partial<Record<OAuthProviderName, OAuthCredentials>>;
   emailProvider?: EmailProvider;
+  runnerStatus?: (agentId: string) => Promise<RunnerStatus>;
+  disconnectRunner?: (agentId: string, reason: string) => Promise<void>;
 };
+export type RunnerStatus = {
+  state: 'online' | 'working' | 'reconnecting' | 'reconnect_required';
+  online: boolean;
+  needs_reconnect: boolean;
+  connected_at: string | null;
+  last_seen_at: string | null;
+  device_name: string | null;
+  runner_version: string | null;
+  provider: string | null;
+  pending_tasks: number;
+  active_conflict_id: string | null;
+  reconnect_reason: string | null;
+};
+const disconnectedRunnerStatus = (): RunnerStatus => ({
+  state: 'reconnect_required',
+  online: false,
+  needs_reconnect: true,
+  connected_at: null,
+  last_seen_at: null,
+  device_name: null,
+  runner_version: null,
+  provider: null,
+  pending_tasks: 0,
+  active_conflict_id: null,
+  reconnect_reason: 'runner_not_connected',
+});
 const limiter = new Map<string, { count: number; reset: number }>();
+const shellArgument = (value: string) => JSON.stringify(value);
+const bootstrapArguments = (origin: string, command: string[]) => [
+  '--input-type=module',
+  '--eval',
+  agentAssets.loaderSource,
+  `${origin}/agent/bootstrap.mjs`,
+  agentAssets.bootstrapSha256,
+  agentAssets.bundleSha256,
+  ...command,
+];
+const bootstrapCommand = (origin: string, command: string[]) =>
+  `<NODE_EXECUTABLE> ${bootstrapArguments(origin, command).map(shellArgument).join(' ')}`;
+const codexNetworkExecution = (origin: string) => ({
+  tool: 'exec_command',
+  network_access: 'required',
+  allowed_origin: origin,
+  approval_strategy: 'use_existing_network_or_request_when_supported',
+  when_network_is_available:
+    'Invoke the exact bundled Node executable directly. Do not request escalation when the current environment already has network access.',
+  when_approval_is_supported: {
+    sandbox_permissions: 'require_escalated',
+    justification: `Allow the bundled Node executable to connect only to ${origin} so it can install or reconnect the ResolveRoom Runner.`,
+  },
+  when_approval_policy_is_never:
+    'Do not request unavailable escalation. If this environment already has network access, invoke the exact bundled Node executable normally. If it does not, stop without invoking it; the pairing code remains unconsumed.',
+});
+const codexRuntimePreparation = (origin: string, purpose: string) =>
+  `call Codex's \`load_workspace_dependencies\` tool and select its returned \`node executable\`. Check the current execution environment before invoking it. If that environment already has network access, invoke the exact bundled Node normally—even when its approval policy is \`Never\`; do not request unavailable escalation. If network is restricted and approval is supported, first call \`exec_command\` with \`sandbox_permissions: "require_escalated"\` and the justification “Allow the bundled Node executable to connect only to ${origin} so it can ${purpose}.” If network is restricted and the approval policy is \`Never\`, stop without invoking the command and report that this task needs a network-enabled local environment`;
 
 const jsonBody = async (c: Context) => {
   try {
@@ -68,12 +135,15 @@ const safeLogPath = (path: string) =>
 export function createApi(db: Database, options: Options = {}) {
   const app = new Hono<AppEnv>();
   const notifications = new NotificationService(db, options.emailProvider);
-  const conflicts = new ConflictService(db, notifications);
+  const judgeEnabled = options.judgeEnabled ?? true;
+  const conflicts = new ConflictService(db, notifications, judgeEnabled);
   const judge = new JudgeService(
     db,
     options.judgeProvider ?? new MockJudgeProvider(),
     notifications,
   );
+  const judgeMode = judgeEnabled ? (options.judgeMode ?? 'mock') : 'disabled';
+  const runnerStatus = options.runnerStatus ?? (async () => disconnectedRunnerStatus());
   app.use('*', secureHeaders());
   const allowedOrigin = new URL(options.appUrl ?? 'http://localhost:5173').origin;
   app.use(
@@ -102,12 +172,21 @@ export function createApi(db: Database, options: Options = {}) {
     const identityKey = authorization || session || developmentUser;
     const identityHash = identityKey ? (await sha256(identityKey)).slice(0, 16) : 'anonymous';
     const conflictKey = c.req.path.match(/\/conflicts\/([^/]+)/)?.[1] ?? 'global';
-    const key = `${c.req.header('cf-connecting-ip') ?? 'local'}:${identityHash}:${conflictKey}:${c.req.path.includes('/actions') ? 'write' : 'read'}`;
+    const rateBucket = c.req.path.includes('/agent-pairings/exchange')
+      ? 'pairing'
+      : c.req.path.includes('/actions')
+        ? 'write'
+        : 'read';
+    const key = `${c.req.header('cf-connecting-ip') ?? 'local'}:${identityHash}:${conflictKey}:${rateBucket}`;
     const now = Date.now();
     if (limiter.size > 10_000)
       for (const [candidate, entry] of limiter) if (entry.reset < now) limiter.delete(candidate);
     const value = limiter.get(key);
-    const limit = c.req.path.includes('/actions') ? 90 : 600;
+    const limit = c.req.path.includes('/agent-pairings/exchange')
+      ? 20
+      : c.req.path.includes('/actions')
+        ? 90
+        : 600;
     if (!value || value.reset < now) limiter.set(key, { count: 1, reset: now + 60_000 });
     else if (value.count >= limit)
       throw new DomainError('RATE_LIMITED', 'Too many requests. Try again shortly.', 429);
@@ -177,6 +256,89 @@ export function createApi(db: Database, options: Options = {}) {
 
   app.get('/health', (c) => c.json({ status: 'ok', service: 'resolveroom' }));
   app.get('/openapi.json', (c) => c.json(openapiDocument));
+  app.get('/.well-known/resolveroom-agent.json', (c) =>
+    c.json({
+      protocol: 'resolveroom-agent-pairing',
+      version: '1.0',
+      product: 'ResolveRoom',
+      origin: allowedOrigin,
+      pairing: {
+        exchange_url: `${allowedOrigin}/api/v1/agent-pairings/exchange`,
+        method: 'POST',
+        code_format: 'XXXX-XXXX-XXXX',
+        code_ttl_seconds: 600,
+        single_use: true,
+      },
+      cli: {
+        distribution: 'resolveroom-origin',
+        version: agentAssets.version,
+        bootstrap_url: `${allowedOrigin}/agent/bootstrap.mjs`,
+        bootstrap_sha256: agentAssets.bootstrapSha256,
+        bundle_url: `${allowedOrigin}/agent/resolveroom.mjs`,
+        bundle_sha256: agentAssets.bundleSha256,
+        manifest_url: `${allowedOrigin}/agent/manifest.json`,
+        connect: bootstrapCommand(allowedOrigin, [
+          'connect',
+          '<PAIRING_CODE>',
+          '--origin',
+          allowedOrigin,
+        ]),
+        reconnect: bootstrapCommand(allowedOrigin, [
+          'runner',
+          'reconnect',
+          '--origin',
+          allowedOrigin,
+        ]),
+        uninstall: bootstrapCommand(allowedOrigin, [
+          'runner',
+          'uninstall',
+          '--origin',
+          allowedOrigin,
+        ]),
+        pair: bootstrapCommand(allowedOrigin, [
+          'pair',
+          '<PAIRING_CODE>',
+          '--origin',
+          allowedOrigin,
+        ]),
+        codex_app: {
+          runtime_tool: 'load_workspace_dependencies',
+          node_field: 'node executable',
+          execution: codexNetworkExecution(allowedOrigin),
+          environment:
+            'Use the returned bundled node executable directly through exec_command. If the current environment already has network access, run it normally—even when its approval policy is Never. If network is restricted and approval is supported, request sandbox_permissions=require_escalated for the ResolveRoom origin before invoking it. Do not use system Node.js, npm, npx, pnpm, GitHub, or a package registry. The bootstrap creates its own private temporary directory and verifies both downloads by SHA-256.',
+          connect_arguments: bootstrapArguments(allowedOrigin, [
+            'connect',
+            '<PAIRING_CODE>',
+            '--origin',
+            allowedOrigin,
+          ]),
+          reconnect_arguments: bootstrapArguments(allowedOrigin, [
+            'runner',
+            'reconnect',
+            '--origin',
+            allowedOrigin,
+          ]),
+          uninstall_arguments: bootstrapArguments(allowedOrigin, [
+            'runner',
+            'uninstall',
+            '--origin',
+            allowedOrigin,
+          ]),
+        },
+      },
+      runtime: {
+        tasks: `${allowedOrigin}/api/v1/agent/tasks`,
+        websocket: `${allowedOrigin.replace(/^http/, 'ws')}/api/v1/agent-runner/connect`,
+        openapi: `${allowedOrigin}/openapi.json`,
+      },
+      security: {
+        pairing_code_is_long_lived_credential: false,
+        credential_is_returned_once: true,
+        never_print_credential: true,
+      },
+    }),
+  );
   app.get('/api/v1/auth/providers', (c) =>
     c.json({
       providers: Object.keys(options.oauth ?? {}),
@@ -285,6 +447,9 @@ export function createApi(db: Database, options: Options = {}) {
     return c.body(null, 204);
   });
   app.get('/api/v1/auth/me', (c) => c.json({ user: human(c) }));
+  app.get('/api/v1/capabilities', (c) =>
+    c.json({ judge: { available: judgeEnabled, mode: judgeMode } }),
+  );
 
   app.post('/api/v1/conflicts', async (c) => {
     const user = human(c);
@@ -312,6 +477,7 @@ export function createApi(db: Database, options: Options = {}) {
           your_party: yours.role,
           opponent: { display_name: opponent.displayName, joined: Boolean(opponent.userId) },
           current_turn: current,
+          judge_available: judgeEnabled,
         };
       }),
     );
@@ -334,14 +500,20 @@ export function createApi(db: Database, options: Options = {}) {
       ...publicConflict(conflict),
       your_party: party.role,
       current_turn: authoritativeTurn(conflict, parties, events),
-      parties: parties.map((p) => ({
-        id: p.id,
-        role: p.role,
-        display_name: p.displayName,
-        agent_bound: Boolean(p.agentId),
-        ready: p.ready,
-        joined: Boolean(p.userId),
-      })),
+      judge_available: judgeEnabled,
+      parties: await Promise.all(
+        parties.map(async (p) => ({
+          id: p.id,
+          role: p.role,
+          display_name: p.displayName,
+          agent_bound: Boolean(p.agentId),
+          agent_connected: p.agentId ? (await runnerStatus(p.agentId)).online : false,
+          runner: p.agentId ? await runnerStatus(p.agentId) : null,
+          ...(p.id === party.id && p.agentId ? { agent_id: p.agentId } : {}),
+          ready: p.ready,
+          joined: Boolean(p.userId),
+        })),
+      ),
     });
   });
   app.get('/api/v1/conflicts/:id/events', async (c) => {
@@ -419,8 +591,9 @@ export function createApi(db: Database, options: Options = {}) {
   });
   app.post('/api/v1/conflicts/:id/ready', async (c) => {
     const body = await jsonBody(c);
-    const result = await conflicts.setReady(c.req.param('id'), human(c).id, body.ready !== false);
-    if (result.started) await runJudgeIfNeeded(db, judge, c.req.param('id'));
+    const user = human(c);
+    const result = await conflicts.setReady(c.req.param('id'), user.id, body.ready !== false);
+    if (judgeEnabled && result.started) await runJudgeIfNeeded(db, judge, c.req.param('id'));
     return c.json(result);
   });
   app.post('/api/v1/conflicts/:id/pause', async (c) => {
@@ -438,7 +611,7 @@ export function createApi(db: Database, options: Options = {}) {
   app.post('/api/v1/conflicts/:id/concede', async (c) => {
     await discardRequestBody(c);
     const value = await conflicts.concede(c.req.param('id'), human(c).id);
-    const verdict = await judge.run(c.req.param('id'));
+    const verdict = judgeEnabled ? await judge.run(c.req.param('id')) : null;
     return c.json({ conflict: value, verdict });
   });
 
@@ -461,18 +634,112 @@ export function createApi(db: Database, options: Options = {}) {
     await db.recordAnalytics('agent_created', user.id, null, { agent_id: value.id });
     return c.json({ agent: value }, 201);
   });
-  app.get('/api/v1/agents', async (c) => c.json({ agents: await db.listAgents(human(c).id) }));
+  app.get('/api/v1/agents', async (c) => {
+    const agents = await db.listAgents(human(c).id);
+    return c.json({
+      agents: await Promise.all(
+        agents.map(async (agent) => {
+          const conflicts = await db.listConflictsForAgent(agent.id);
+          const deletionBlockingConflict = conflicts.find((candidate) =>
+            ['active', 'paused', 'judging'].includes(candidate.status),
+          );
+          const recoveryConflict = conflicts.find((candidate) =>
+            ['inviting', 'briefing', 'active', 'paused', 'judging'].includes(candidate.status),
+          );
+          return {
+            ...agent,
+            deletion_blocked: Boolean(deletionBlockingConflict),
+            active_conflict: recoveryConflict
+              ? { id: recoveryConflict.id, title: recoveryConflict.title }
+              : null,
+            runner: await runnerStatus(agent.id),
+          };
+        }),
+      ),
+    });
+  });
   app.get('/api/v1/agents/:id', async (c) => {
     const user = human(c);
     const value = await db.getAgent(c.req.param('id'));
     if (!value || value.ownerUserId !== user.id)
       throw new DomainError('NOT_FOUND', 'Agent not found.', 404);
-    return c.json({ agent: value });
+    return c.json({ agent: { ...value, runner: await runnerStatus(value.id) } });
+  });
+  app.get('/api/v1/agents/:id/local-cleanup', async (c) => {
+    const user = human(c);
+    const agentId = c.req.param('id');
+    const agent = await db.getAgent(agentId);
+    if (!agent || agent.ownerUserId !== user.id || agent.status !== 'active')
+      throw new DomainError('NOT_FOUND', 'Agent not found.', 404);
+    const assigned = (await db.listConflictsForAgent(agentId)).find((conflict) =>
+      ['active', 'paused', 'judging'].includes(conflict.status),
+    );
+    if (assigned)
+      throw new DomainError(
+        'INVALID_STATE',
+        'This Runner is assigned to an unfinished conflict. Resolve or cancel that conflict before local cleanup.',
+        409,
+      );
+    const args = bootstrapArguments(allowedOrigin, [
+      'runner',
+      'uninstall',
+      '--origin',
+      allowedOrigin,
+    ]);
+    const preparation = codexRuntimePreparation(allowedOrigin, 'remove the ResolveRoom Runner');
+    c.header('Cache-Control', 'no-store, private');
+    return c.json({
+      instruction: `Remove this computer's ResolveRoom Runner for ${allowedOrigin}. First ${preparation}. Once network access is available, invoke that exact Node executable directly and exactly once with this JSON argument array: \`${JSON.stringify(args)}\`. Do not use the system Node.js, npm, npx, pnpm, GitHub, or a package registry. Do not wrap, redirect, capture, or parse the command output. This same-origin cleanup stops and unregisters the background service, terminates any recorded fallback process, removes the private Runner runtime and logs, and deletes only this ResolveRoom origin's local credential, including its macOS Keychain entry when present. It is idempotent and returns a credential-redacted structured result. It does not delete the server-side Agent identity; return to ResolveRoom after it succeeds and finish step 2 there.`,
+      command: bootstrapCommand(allowedOrigin, ['runner', 'uninstall', '--origin', allowedOrigin]),
+      codex_runtime: {
+        tool: 'load_workspace_dependencies',
+        node_field: 'node executable',
+        distribution: 'same-origin self-contained cleanup',
+        execution: codexNetworkExecution(allowedOrigin),
+        bootstrap_sha256: agentAssets.bootstrapSha256,
+        bundle_sha256: agentAssets.bundleSha256,
+        arguments: args,
+      },
+      scope: {
+        origin: allowedOrigin,
+        removes: ['background service', 'Runner process', 'private runtime and logs', 'credential'],
+        server_agent_deleted: false,
+      },
+    });
+  });
+  app.delete('/api/v1/agents/:id', async (c) => {
+    const user = human(c);
+    const agentId = c.req.param('id');
+    const agent = await db.getAgent(agentId);
+    if (!agent || agent.ownerUserId !== user.id || agent.status !== 'active')
+      throw new DomainError('NOT_FOUND', 'Agent not found.', 404);
+    const result = await db.revokeAgent(agentId, user.id);
+    if (result.status === 'in_use')
+      throw new DomainError(
+        'INVALID_STATE',
+        'This agent is assigned to an active conflict. Resolve or cancel that conflict before deleting the agent.',
+        409,
+      );
+    if (result.status === 'not_found') throw new DomainError('NOT_FOUND', 'Agent not found.', 404);
+    await options.disconnectRunner?.(agentId, 'agent_deleted');
+    for (const party of result.unboundParties)
+      await db.appendEvent({
+        conflictId: party.conflictId,
+        eventType: 'agent_unbound',
+        actorType: 'user',
+        actorId: user.id,
+        partyId: party.id,
+        partyRole: party.role,
+        visibility: 'case',
+        payload: { agent_id: agentId, reason: 'agent_deleted' },
+      });
+    await db.recordAnalytics('agent_deleted', user.id, null, { agent_id: agentId });
+    return c.body(null, 204);
   });
   app.post('/api/v1/agents/:id/tokens', async (c) => {
     const user = human(c);
     const ag = await db.getAgent(c.req.param('id'));
-    if (!ag || ag.ownerUserId !== user.id)
+    if (!ag || ag.ownerUserId !== user.id || ag.status !== 'active')
       throw new DomainError('NOT_FOUND', 'Agent not found.', 404);
     const raw = secureToken('rr_agent_');
     const timestamp = new Date().toISOString();
@@ -497,9 +764,10 @@ export function createApi(db: Database, options: Options = {}) {
   app.post('/api/v1/agents/:id/tokens/rotate', async (c) => {
     const user = human(c);
     const ag = await db.getAgent(c.req.param('id'));
-    if (!ag || ag.ownerUserId !== user.id)
+    if (!ag || ag.ownerUserId !== user.id || ag.status !== 'active')
       throw new DomainError('NOT_FOUND', 'Agent not found.', 404);
     await db.revokeAllAgentTokens(ag.id);
+    await options.disconnectRunner?.(ag.id, 'credential_rotated');
     const raw = secureToken('rr_agent_');
     const timestamp = new Date().toISOString();
     const token = {
@@ -523,6 +791,7 @@ export function createApi(db: Database, options: Options = {}) {
   app.delete('/api/v1/agents/:id/tokens/:tokenId', async (c) => {
     const ok = await db.revokeAgentToken(c.req.param('tokenId'), human(c).id);
     if (!ok) throw new DomainError('NOT_FOUND', 'Credential not found.', 404);
+    await options.disconnectRunner?.(c.req.param('id'), 'credential_revoked');
     return c.body(null, 204);
   });
   app.post('/api/v1/conflicts/:id/agent', async (c) => {
@@ -534,6 +803,149 @@ export function createApi(db: Database, options: Options = {}) {
   app.delete('/api/v1/conflicts/:id/agent', async (c) =>
     c.json({ party: await conflicts.unbindAgent(c.req.param('id'), human(c).id) }),
   );
+
+  app.post('/api/v1/conflicts/:id/agent/pairings', async (c) => {
+    const user = human(c);
+    const body = await jsonBody(c);
+    const conflictId = c.req.param('id');
+    let { conflict, party } = await conflicts.requireParticipant(conflictId, user.id);
+    if (['resolved', 'cancelled', 'expired'].includes(conflict.status))
+      throw new DomainError('INVALID_STATE', 'This conflict no longer accepts an agent.', 409);
+
+    let ag = party.agentId ? await db.getAgent(party.agentId) : null;
+    if (!ag || ag.status !== 'active') {
+      const timestamp = new Date().toISOString();
+      const requestedName = String(body.agent_name ?? '').trim();
+      ag = {
+        id: opaqueId('agt'),
+        ownerUserId: user.id,
+        name:
+          requestedName.length >= 2 && requestedName.length <= 120
+            ? requestedName
+            : `${user.displayName}'s Codex agent`,
+        status: 'active',
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      };
+      await db.createAgent(ag);
+      await db.recordAnalytics('agent_created', user.id, conflictId, { agent_id: ag.id });
+      party = await conflicts.bindAgent(conflictId, user.id, ag.id);
+      conflict = (await db.getConflict(conflictId)) ?? conflict;
+    }
+
+    await db.revokeOpenAgentPairings(ag.id);
+    const code = securePairingCode();
+    const createdAt = new Date().toISOString();
+    const pairing: AgentPairing = {
+      id: opaqueId('prg'),
+      agentId: ag.id,
+      conflictId,
+      codeHash: await sha256(code),
+      expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
+      claimedAt: null,
+      revokedAt: null,
+      clientName: null,
+      createdAt,
+    };
+    await db.createAgentPairing(pairing);
+    const codexArguments = bootstrapArguments(allowedOrigin, [
+      'connect',
+      code,
+      '--origin',
+      allowedOrigin,
+    ]);
+    const codexReconnectArguments = bootstrapArguments(allowedOrigin, [
+      'runner',
+      'reconnect',
+      '--origin',
+      allowedOrigin,
+    ]);
+    const command = bootstrapCommand(allowedOrigin, ['connect', code, '--origin', allowedOrigin]);
+    const reconnectCommand = bootstrapCommand(allowedOrigin, [
+      'runner',
+      'reconnect',
+      '--origin',
+      allowedOrigin,
+    ]);
+    const runtimePreparation = `${codexRuntimePreparation(allowedOrigin, 'install or reconnect the ResolveRoom Runner')}; the pairing code will remain unconsumed`;
+    return c.json(
+      {
+        pairing: pairingView(pairing),
+        code,
+        instruction: `Connect this computer's Codex to ResolveRoom for “${conflict.title}”. Before running anything, ${runtimePreparation}. Once network access is available, invoke that exact Node executable directly and exactly once with this JSON argument array: \`${JSON.stringify(codexArguments)}\`. Do not use the system Node.js, npm, npx, pnpm, GitHub, or any package registry. Do not wrap, redirect, capture, or parse the command's output. The argument array contains direct JavaScript source and does not require Base64 decoding or a second eval. The same-origin bootstrap verifies the downloaded bootstrap and self-contained Runner bundle by SHA-256, validates the local Codex executable before consuming the pairing code, replaces any stale copied runtime, stores a protected recovery copy of the credential, and enables automatic later turns. Protect the private brief and never print or reveal the stored credential. If a restricted attempt returns \`error: "network_access_required"\` with \`pairing_consumed: false\`, retry the same JSON arguments exactly once after network access becomes available. If the result has \`pairing_consumed: true\` but the Runner is not online, keep the returned credential private and recover without a new pairing code by invoking the same bundled Node executable once with: \`${JSON.stringify(codexReconnectArguments)}\`.`,
+        command,
+        reconnect_command: reconnectCommand,
+        recovery_instruction: `Finish the ResolveRoom Runner setup without generating a new pairing code. First ${runtimePreparation}. Once network access is available, invoke that exact Node executable directly once with this JSON argument array: \`${JSON.stringify(codexReconnectArguments)}\`. This same-origin flow does not use npm, pnpm, GitHub, or a package registry. Do not wrap or redirect the command; its structured output is credential-redacted. If a restricted attempt returns \`error: "network_access_required"\`, retry the same JSON arguments exactly once after network access becomes available. Never print or reveal the stored credential or private brief.`,
+        codex_runtime: {
+          tool: 'load_workspace_dependencies',
+          node_field: 'node executable',
+          distribution: 'same-origin self-contained bundle',
+          execution: codexNetworkExecution(allowedOrigin),
+          bootstrap_sha256: agentAssets.bootstrapSha256,
+          bundle_sha256: agentAssets.bundleSha256,
+          arguments: codexArguments,
+          recovery_arguments: codexReconnectArguments,
+        },
+        agent: { id: ag.id, name: ag.name },
+        party: { id: party.id, role: party.role, agent_bound: true },
+      },
+      201,
+    );
+  });
+
+  app.post('/api/v1/agent-pairings/exchange', async (c) => {
+    const body = await jsonBody(c);
+    const code = normalizePairingCode(String(body.code ?? ''));
+    const clientName = String(body.client_name ?? 'Codex')
+      .trim()
+      .slice(0, 120);
+    if (!code || clientName.length < 2)
+      throw new DomainError(
+        'VALIDATION_ERROR',
+        'A valid pairing code and client name are required.',
+        422,
+      );
+    const raw = secureToken('rr_agent_');
+    const createdAt = new Date().toISOString();
+    const token: AgentToken = {
+      id: opaqueId('tok'),
+      agentId: '',
+      tokenHash: await sha256(raw),
+      tokenPrefix: raw.slice(0, 18),
+      createdAt,
+      lastUsedAt: null,
+      revokedAt: null,
+    };
+    const claimed = await db.claimAgentPairing(await sha256(code), clientName, token);
+    if (!claimed)
+      throw new DomainError(
+        'NOT_FOUND',
+        'This pairing code is invalid, expired, or already used.',
+        404,
+      );
+    token.agentId = claimed.agentId;
+    const ag = await db.getAgent(claimed.agentId);
+    if (!ag) throw new DomainError('NOT_FOUND', 'This pairing code is unavailable.', 404);
+    await options.disconnectRunner?.(ag.id, 'credential_rotated');
+    return c.json({
+      credential: raw,
+      credential_type: 'Bearer',
+      agent: { id: ag.id, name: ag.name },
+      conflict_id: claimed.conflictId,
+      api_base_url: `${allowedOrigin}/api/v1`,
+      warning: 'This credential is returned once. Store it securely and never print it.',
+    });
+  });
+
+  app.get('/api/v1/agent-pairings/:id', async (c) => {
+    const user = human(c);
+    const pairing = await db.getAgentPairing(c.req.param('id'));
+    const ag = pairing ? await db.getAgent(pairing.agentId) : null;
+    if (!pairing || !ag || ag.ownerUserId !== user.id)
+      throw new DomainError('NOT_FOUND', 'Pairing not found.', 404);
+    c.header('Cache-Control', 'no-store, private');
+    return c.json({ pairing: pairingView(pairing) });
+  });
 
   app.get('/api/v1/agent/tasks', async (c) => {
     const ag = agentIdentity(c);
@@ -556,6 +968,10 @@ export function createApi(db: Database, options: Options = {}) {
     );
     return c.json({ tasks });
   });
+  app.get('/api/v1/agent/runner', async (c) => {
+    const ag = agentIdentity(c);
+    return c.json({ agent: { id: ag.id, name: ag.name }, runner: await runnerStatus(ag.id) });
+  });
   app.post('/api/v1/conflicts/:id/actions', async (c) => {
     const ag = agentIdentity(c);
     const parsed = agentActionSchema.safeParse(await jsonBody(c));
@@ -577,7 +993,7 @@ export function createApi(db: Database, options: Options = {}) {
         duplicate: result.duplicate,
       }),
     );
-    if (result.needsJudging) await judge.run(c.req.param('id'));
+    if (judgeEnabled && result.needsJudging) await judge.run(c.req.param('id'));
     return c.json({
       event_id: result.event.id,
       sequence_number: result.event.sequenceNumber,
@@ -588,7 +1004,19 @@ export function createApi(db: Database, options: Options = {}) {
   app.post('/api/v1/conflicts/:id/judge', async (c) => {
     await discardRequestBody(c);
     await conflicts.requireParticipant(c.req.param('id'), human(c).id);
+    if (!judgeEnabled)
+      throw new DomainError(
+        'JUDGE_UNAVAILABLE',
+        'Advisory assessment is not enabled for this ResolveRoom deployment.',
+        503,
+      );
     return c.json({ verdict: await judge.run(c.req.param('id')) });
+  });
+  app.post('/api/v1/conflicts/:id/complete', async (c) => {
+    await discardRequestBody(c);
+    return c.json({
+      conflict: await conflicts.completeWithoutJudge(c.req.param('id'), human(c).id),
+    });
   });
   app.get('/api/v1/conflicts/:id/verdict', async (c) => {
     await conflicts.requireParticipant(c.req.param('id'), human(c).id);
@@ -720,7 +1148,26 @@ function publicConflict(c: any) {
     resolved_at: c.resolvedAt,
   };
 }
-function authoritativeTurn(conflict: any, parties: ConflictParty[], events: any[]) {
+function pairingView(pairing: AgentPairing) {
+  const status = pairing.revokedAt
+    ? 'revoked'
+    : pairing.claimedAt
+      ? 'connected'
+      : new Date(pairing.expiresAt) <= new Date()
+        ? 'expired'
+        : 'waiting';
+  return {
+    id: pairing.id,
+    agent_id: pairing.agentId,
+    conflict_id: pairing.conflictId,
+    status,
+    expires_at: pairing.expiresAt,
+    claimed_at: pairing.claimedAt,
+    client_name: pairing.clientName,
+    created_at: pairing.createdAt,
+  };
+}
+export function authoritativeTurn(conflict: any, parties: ConflictParty[], events: any[]) {
   if (conflict.status !== 'active') return null;
   const first = parties.find((p) => p.id === conflict.firstSpeakerPartyId)?.role ?? 'party_a';
   const phaseIndex = Math.max(
@@ -752,12 +1199,10 @@ function authoritativeTurn(conflict: any, parties: ConflictParty[], events: any[
 }
 async function allAgentConflicts(db: Database, agentId: string) {
   const list: any[] = [];
-  for (const agOwner of [(await db.getAgent(agentId))?.ownerUserId].filter(Boolean) as string[]) {
-    for (const conflict of await db.listConflictsForUser(agOwner)) {
-      const parties = await db.getParties(conflict.id);
-      const party = parties.find((p) => p.agentId === agentId);
-      if (party) list.push({ conflict, party, parties });
-    }
+  for (const conflict of await db.listConflictsForAgent(agentId)) {
+    const parties = await db.getParties(conflict.id);
+    const party = parties.find((p) => p.agentId === agentId);
+    if (party) list.push({ conflict, party, parties });
   }
   return list;
 }

@@ -4,5 +4,7 @@ playwright-report
 test-results
 .wrangler
 .superdesign/tmp
+public/agent/resolveroom.mjs
+src/generated/agent-assets.ts
 package-lock.json
 docs

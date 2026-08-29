@@ -1,5 +1,6 @@
 import type {
   Agent,
+  AgentPairing,
   AgentToken,
   Conflict,
   ConflictEvent,
@@ -16,6 +17,11 @@ import type {
 export interface NewEvent extends Omit<ConflictEvent, 'id' | 'sequenceNumber' | 'createdAt'> {
   clientRequestId?: string;
 }
+
+export type AgentRevocationResult =
+  | { status: 'revoked'; unboundParties: ConflictParty[] }
+  | { status: 'in_use'; conflictId: string }
+  | { status: 'not_found' };
 
 export interface Database {
   createUser(user: User): Promise<User>;
@@ -38,6 +44,7 @@ export interface Database {
   getConflict(id: string): Promise<Conflict | null>;
   updateConflict(conflict: Conflict): Promise<void>;
   listConflictsForUser(userId: string): Promise<Conflict[]>;
+  listConflictsForAgent(agentId: string): Promise<Conflict[]>;
   getParties(conflictId: string): Promise<ConflictParty[]>;
   updateParty(party: ConflictParty): Promise<void>;
   findPartyForUser(conflictId: string, userId: string): Promise<ConflictParty | null>;
@@ -52,10 +59,20 @@ export interface Database {
   createAgent(agent: Agent): Promise<Agent>;
   getAgent(id: string): Promise<Agent | null>;
   listAgents(userId: string): Promise<Agent[]>;
+  revokeAgent(agentId: string, ownerUserId: string): Promise<AgentRevocationResult>;
   createAgentToken(token: AgentToken): Promise<AgentToken>;
   findAgentToken(tokenHash: string): Promise<AgentToken | null>;
   revokeAgentToken(tokenId: string, ownerUserId: string): Promise<boolean>;
   revokeAllAgentTokens(agentId: string): Promise<void>;
+  hasActiveAgentToken(agentId: string): Promise<boolean>;
+  createAgentPairing(pairing: AgentPairing): Promise<AgentPairing>;
+  getAgentPairing(id: string): Promise<AgentPairing | null>;
+  revokeOpenAgentPairings(agentId: string): Promise<void>;
+  claimAgentPairing(
+    codeHash: string,
+    clientName: string,
+    token: AgentToken,
+  ): Promise<AgentPairing | null>;
 
   createInvitation(invitation: Invitation): Promise<Invitation>;
   findInvitation(tokenHash: string): Promise<Invitation | null>;

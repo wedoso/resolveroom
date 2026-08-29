@@ -3,7 +3,7 @@
 仓库已经包含两条 GitHub Actions：
 
 - **CI**：在 Pull Request、推送到 main、手动运行时执行格式、lint、类型检查、单元/集成测试、生产构建、Chromium/WebKit 浏览器 E2E、无障碍检查和依赖审计。
-- **Deploy production**：在推送到 main 或手动点击 **Run workflow** 时，校验生产配置、重跑 release gates、检查 Worker bundle、执行 D1 迁移、同步 Worker secrets、部署并检查健康端点、OpenAPI 和首页。
+- **Deploy production**：在推送到 main 或手动点击 **Run workflow** 时，校验生产配置、重跑 release gates、检查 Worker bundle、执行 D1 与 Durable Object 迁移、同步 Worker secrets、部署并检查健康端点、OpenAPI 和首页。
 
 部署 Job 使用 GitHub 的 `production` Environment。建议设置 required reviewer；这样自动推送到 main 后仍需要批准，手动触发也会留下 deployment history。
 
@@ -75,7 +75,7 @@ GitHub 仓库 → **Settings → Environments → New environment**，名称必�
 | `CLOUDFLARE_ACCOUNT_ID` | Cloudflare 32 位 Account ID |
 | `CLOUDFLARE_D1_DATABASE_ID` | Cloudflare 返回的完整 resolveroom D1 database ID |
 | `PUBLIC_APP_URL` | 最终 HTTPS origin，不带尾部斜杠 |
-| `JUDGE_PROVIDER` | 初次部署填 `mock` |
+| `JUDGE_PROVIDER` | 未配置外部 LLM 时填 `disabled`；配置完成后改为 `llm` |
 | `EMAIL_PROVIDER` | 初次部署填 `console` |
 
 在 **Environment secrets** 添加：
@@ -98,6 +98,8 @@ GitHub OAuth 的 secret 名故意带 `RESOLVEROOM_` 前缀，避免和 Actions �
 2. 打开 **Actions → Deploy production → Run workflow → Run workflow**。
 3. 如果设置了 Environment reviewer，在等待阶段点击批准。
 4. Job 会自动执行 D1 migration、secret 同步、Worker 部署和线上 smoke test。
+
+本次 Runner 架构新增的 `AGENT_RUNNERS` Durable Object 及其 SQLite class migration 已写入 `wrangler.toml`，会随同一部署自动创建；不需要新增 GitHub Variable 或 Secret。部署完成后，旧版已经配对的用户需要在网页中执行一次 **Reconnect Runner**，以安装常驻服务并建立新的实时连接。
 
 推送到 main 也会触发同一流水线。生产部署串行执行，不会让两个 migration/deploy 同时运行。
 

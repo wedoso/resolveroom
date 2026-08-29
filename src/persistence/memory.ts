@@ -1,6 +1,7 @@
 import { opaqueId } from '@/domain/security';
 import type {
   Agent,
+  AgentPairing,
   AgentToken,
   Conflict,
   ConflictEvent,
@@ -23,6 +24,7 @@ export class MemoryDatabase implements Database {
   briefs = new Map<string, PrivateBrief>();
   agents = new Map<string, Agent>();
   tokens = new Map<string, AgentToken>();
+  pairings = new Map<string, AgentPairing>();
   invitations = new Map<string, Invitation>();
   verdicts = new Map<string, VerdictRecord>();
   shareLinks = new Map<string, ShareLink>();
@@ -84,6 +86,12 @@ export class MemoryDatabase implements Database {
       for (const [tokenId, token] of this.tokens)
         if (ownedAgents.has(token.agentId))
           this.tokens.set(tokenId, { ...token, revokedAt: token.revokedAt ?? timestamp });
+      for (const [pairingId, pairing] of this.pairings)
+        if (ownedAgents.has(pairing.agentId))
+          this.pairings.set(pairingId, {
+            ...pairing,
+            revokedAt: pairing.revokedAt ?? timestamp,
+          });
     }
   }
   async createSession(session: Session) {
@@ -116,6 +124,17 @@ export class MemoryDatabase implements Database {
     const ids = new Set(
       [...this.parties.values()]
         .filter((party) => party.userId === userId)
+        .map((party) => party.conflictId),
+    );
+    return [...this.conflicts.values()]
+      .filter((conflict) => ids.has(conflict.id))
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+      .map((value) => structuredClone(value));
+  }
+  async listConflictsForAgent(agentId: string) {
+    const ids = new Set(
+      [...this.parties.values()]
+        .filter((party) => party.agentId === agentId)
         .map((party) => party.conflictId),
     );
     return [...this.conflicts.values()]
@@ -190,8 +209,29 @@ export class MemoryDatabase implements Database {
   }
   async listAgents(userId: string) {
     return [...this.agents.values()]
-      .filter((agent) => agent.ownerUserId === userId)
+      .filter((agent) => agent.ownerUserId === userId && agent.status === 'active')
       .map((value) => structuredClone(value));
+  }
+  async revokeAgent(agentId: string, ownerUserId: string) {
+    const agent = this.agents.get(agentId);
+    if (!agent || agent.ownerUserId !== ownerUserId || agent.status !== 'active')
+      return { status: 'not_found' } as const;
+    const boundParties = [...this.parties.values()].filter((party) => party.agentId === agentId);
+    const protectedConflict = boundParties
+      .map((party) => this.conflicts.get(party.conflictId))
+      .find((conflict) => conflict && ['active', 'paused', 'judging'].includes(conflict.status));
+    if (protectedConflict) return { status: 'in_use', conflictId: protectedConflict.id } as const;
+    const revokedAt = new Date().toISOString();
+    this.agents.set(agentId, { ...agent, status: 'revoked', updatedAt: revokedAt });
+    for (const party of boundParties)
+      this.parties.set(party.id, { ...party, agentId: null, ready: false });
+    for (const [id, token] of this.tokens)
+      if (token.agentId === agentId)
+        this.tokens.set(id, { ...token, revokedAt: token.revokedAt ?? revokedAt });
+    for (const [id, pairing] of this.pairings)
+      if (pairing.agentId === agentId && !pairing.claimedAt && !pairing.revokedAt)
+        this.pairings.set(id, { ...pairing, revokedAt });
+    return { status: 'revoked', unboundParties: structuredClone(boundParties) } as const;
   }
   async createAgentToken(token: AgentToken) {
     this.tokens.set(token.id, structuredClone(token));
@@ -213,6 +253,50 @@ export class MemoryDatabase implements Database {
     for (const [id, token] of this.tokens)
       if (token.agentId === agentId)
         this.tokens.set(id, { ...token, revokedAt: new Date().toISOString() });
+  }
+  async hasActiveAgentToken(agentId: string) {
+    return [...this.tokens.values()].some(
+      (token) => token.agentId === agentId && token.revokedAt === null,
+    );
+  }
+  async createAgentPairing(pairing: AgentPairing) {
+    this.pairings.set(pairing.id, structuredClone(pairing));
+    return structuredClone(pairing);
+  }
+  async getAgentPairing(id: string) {
+    return structuredClone(this.pairings.get(id) ?? null);
+  }
+  async revokeOpenAgentPairings(agentId: string) {
+    const revokedAt = new Date().toISOString();
+    for (const [id, pairing] of this.pairings)
+      if (pairing.agentId === agentId && !pairing.claimedAt && !pairing.revokedAt)
+        this.pairings.set(id, { ...pairing, revokedAt });
+  }
+  async claimAgentPairing(codeHash: string, clientName: string, token: AgentToken) {
+    const entry = [...this.pairings.entries()].find(([, pairing]) => pairing.codeHash === codeHash);
+    if (!entry) return null;
+    const [id, pairing] = entry;
+    const now = new Date();
+    const agent = this.agents.get(pairing.agentId);
+    if (
+      pairing.claimedAt ||
+      pairing.revokedAt ||
+      new Date(pairing.expiresAt) <= now ||
+      agent?.status !== 'active'
+    )
+      return null;
+    if (!pairing.conflictId) return null;
+    const ownerParty = [...this.parties.values()].find(
+      (party) => party.conflictId === pairing.conflictId && party.userId === agent.ownerUserId,
+    );
+    if (!ownerParty || (ownerParty.agentId && ownerParty.agentId !== pairing.agentId)) return null;
+    if (!ownerParty.agentId)
+      this.parties.set(ownerParty.id, { ...ownerParty, agentId: pairing.agentId, ready: false });
+    const claimed = { ...pairing, claimedAt: now.toISOString(), clientName };
+    this.pairings.set(id, claimed);
+    await this.revokeAllAgentTokens(pairing.agentId);
+    this.tokens.set(token.id, structuredClone({ ...token, agentId: pairing.agentId }));
+    return structuredClone(claimed);
   }
 
   async createInvitation(invitation: Invitation) {
