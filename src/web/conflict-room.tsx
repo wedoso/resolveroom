@@ -23,6 +23,8 @@ import {
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { api } from './api';
+import { copyText } from './clipboard';
+import { AgentRemovalDialog } from './agent-removal';
 import {
   AppShell,
   ConfirmDialog,
@@ -83,6 +85,10 @@ export function ConflictRoomPage() {
   }, [id]);
   useEffect(() => {
     void load();
+  }, [load]);
+  useEffect(() => {
+    const interval = window.setInterval(() => void load(), 10_000);
+    return () => window.clearInterval(interval);
   }, [load]);
   useEffect(() => {
     if (!id) return;
@@ -208,11 +214,23 @@ export function ConflictRoomPage() {
           </div>
         </header>
         <ParticipantStrip parties={c.parties} />
-        <ProtocolProgress phase={c.phase} status={c.status} />
+        <ProtocolProgress phase={c.phase} status={c.status} judgeAvailable={c.judge_available} />
+        <p className="protocol-explainer">
+          3 phases · 2 turns each · 6 total statements. After both closing statements,{' '}
+          {c.judge_available
+            ? 'the advisory Judge evaluates the completed record.'
+            : 'the conflict closes as a completed record without a verdict.'}
+        </p>
         <div className="room-grid">
           <section className="record-column">
             <div className="room-tabs" role="tablist" aria-label="Conflict sections">
-              {['live', 'transcript', 'private brief', 'verdict', 'settings'].map((value) => (
+              {[
+                'live',
+                'transcript',
+                'private brief',
+                ...(c.judge_available ? ['verdict'] : []),
+                'settings',
+              ].map((value) => (
                 <button
                   key={value}
                   role="tab"
@@ -271,8 +289,14 @@ export function ConflictRoomPage() {
             )}
           </section>
           <aside className="context-rail">
-            <TurnCard conflict={c} />
-            <AgentCard id={id!} party={yours} agents={data.agents} load={load} />
+            <TurnCard conflict={c} id={id!} load={load} />
+            <AgentCard
+              id={id!}
+              conflictStatus={c.status}
+              party={yours}
+              agents={data.agents}
+              load={load}
+            />
             <section className="rail-section">
               <div className="rail-label">
                 PRIVATE BRIEF <span>{data.brief ? 'SAVED' : 'NOT STARTED'}</span>
@@ -281,7 +305,7 @@ export function ConflictRoomPage() {
                 <LockKeyhole />
                 <div>
                   <strong>Only you and your authorized agent</strong>
-                  <p>Never shared with {opponent.display_name}, their agent, or the Judge.</p>
+                  <p>Never shared with {opponent.display_name} or their agent.</p>
                 </div>
                 <button className="text-link" onClick={() => setTab('private brief')}>
                   {data.brief ? 'Edit brief' : 'Add context'} →
@@ -305,7 +329,7 @@ export function ConflictRoomPage() {
                 <input readOnly value={invite.url} />
                 <button
                   className="icon-button"
-                  onClick={() => void navigator.clipboard.writeText(invite.url)}
+                  onClick={() => void copyText(invite.url)}
                   aria-label="Copy invitation"
                 >
                   <Copy />
@@ -337,8 +361,12 @@ export function ConflictRoomPage() {
       <ConfirmDialog
         open={confirm === 'concede'}
         title="Concede this conflict?"
-        description="Your concession will become part of the shared case record and the Judge will prepare a short advisory assessment."
-        confirmLabel="Concede and request verdict"
+        description={
+          c.judge_available
+            ? 'Your concession will become part of the shared case record and the Judge will prepare a short advisory assessment.'
+            : 'Your concession will become part of the shared case record and end the structured exchange.'
+        }
+        confirmLabel={c.judge_available ? 'Concede and request verdict' : 'Concede conflict'}
         onClose={() => setConfirm(null)}
         onConfirm={() => mutate('concede')}
       />
@@ -366,10 +394,19 @@ function ParticipantStrip({ parties }: { parties: any[] }) {
     </section>
   );
 }
-function ProtocolProgress({ phase, status }: { phase: string | null; status: string }) {
-  const items = ['opening', 'rebuttal', 'closing', 'verdict'];
-  const current = status === 'resolved' ? 'verdict' : (phase ?? 'opening');
-  const index = items.indexOf(current);
+function ProtocolProgress({
+  phase,
+  status,
+  judgeAvailable,
+}: {
+  phase: string | null;
+  status: string;
+  judgeAvailable: boolean;
+}) {
+  const finalStep = judgeAvailable ? 'assessment' : 'complete';
+  const items = ['opening', 'rebuttal', 'closing', finalStep];
+  const current = status === 'judging' || status === 'resolved' ? finalStep : (phase ?? 'opening');
+  const index = status === 'resolved' ? items.length : Math.max(0, items.indexOf(current));
   return (
     <section className="protocol-progress" aria-label="Protocol progress">
       {items.map((item, i) => (
@@ -403,9 +440,31 @@ function ConnectionState({ state }: { state: string }) {
     </span>
   );
 }
-function TurnCard({ conflict: c }: { conflict: any }) {
+function TurnCard({
+  conflict: c,
+  id,
+  load,
+}: {
+  conflict: any;
+  id: string;
+  load: () => Promise<void>;
+}) {
   const turn = c.current_turn;
   const party = turn ? c.parties.find((p: any) => p.id === turn.party_id) : null;
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const complete = async () => {
+    setBusy(true);
+    setError('');
+    try {
+      await api(`/conflicts/${id}/complete`, { method: 'POST' });
+      await load();
+    } catch (value) {
+      setError(value instanceof Error ? value.message : 'Could not complete this conflict.');
+    } finally {
+      setBusy(false);
+    }
+  };
   return (
     <section className="rail-section">
       <div className="rail-label">CURRENT STATE</div>
@@ -418,7 +477,10 @@ function TurnCard({ conflict: c }: { conflict: any }) {
               </span>
               <span>
                 <strong>{party?.display_name}’s agent</strong>
-                <small>Owns the {c.phase} turn</small>
+                <small>
+                  Phase {Math.max(1, ['opening', 'rebuttal', 'closing'].indexOf(c.phase) + 1)} of 3
+                  · owns the {c.phase} turn
+                </small>
               </span>
               <i />
             </div>
@@ -431,14 +493,37 @@ function TurnCard({ conflict: c }: { conflict: any }) {
             <Scale />
             <strong>
               {c.status === 'resolved'
-                ? 'Assessment complete'
+                ? c.judge_available
+                  ? 'Assessment complete'
+                  : 'Conflict complete'
                 : c.status === 'judging'
-                  ? 'Judge is evaluating'
+                  ? c.judge_available
+                    ? 'Judge is evaluating'
+                    : 'Ready to complete'
                   : c.status === 'briefing'
                     ? 'Waiting for both participants'
                     : c.status.replaceAll('_', ' ')}
             </strong>
-            <p>No agent action is currently accepted.</p>
+            <p>
+              {c.status === 'resolved'
+                ? c.judge_available
+                  ? 'The six-turn exchange and advisory assessment are finished.'
+                  : 'The six-turn exchange is closed. No verdict was generated.'
+                : c.status === 'judging' && !c.judge_available
+                  ? 'This is a conflict completed before record-only finalization was enabled. Close it now without a verdict.'
+                  : 'No agent action is currently accepted.'}
+            </p>
+            {c.status === 'judging' && !c.judge_available && (
+              <button className="button wide" disabled={busy} onClick={() => void complete()}>
+                {busy ? <LoaderCircle className="spin" /> : <Check />}
+                Complete conflict
+              </button>
+            )}
+            {error && (
+              <p className="form-error" role="alert">
+                {error}
+              </p>
+            )}
           </>
         )}
       </div>
@@ -447,16 +532,23 @@ function TurnCard({ conflict: c }: { conflict: any }) {
 }
 function AgentCard({
   id,
+  conflictStatus,
   party,
   agents,
   load,
 }: {
   id: string;
+  conflictStatus: string;
   party: any;
   agents: any[];
   load: () => Promise<void>;
 }) {
   const [busy, setBusy] = useState(false);
+  const [removeOpen, setRemoveOpen] = useState(false);
+  const [pairing, setPairing] = useState<any>(null);
+  const [pairingError, setPairingError] = useState('');
+  const [copied, setCopied] = useState(false);
+  const [copiedRecovery, setCopiedRecovery] = useState(false);
   const bind = async (agentId: string) => {
     setBusy(true);
     await api(`/conflicts/${id}/agent`, {
@@ -466,68 +558,311 @@ function AgentCard({
     await load();
     setBusy(false);
   };
+  const startPairing = async () => {
+    setBusy(true);
+    setPairingError('');
+    setCopied(false);
+    setCopiedRecovery(false);
+    try {
+      const value = await api<any>(`/conflicts/${id}/agent/pairings`, {
+        method: 'POST',
+        body: '{}',
+      });
+      setPairing(value);
+      await load();
+    } catch (error) {
+      setPairingError(error instanceof Error ? error.message : 'Could not create a pairing code.');
+    } finally {
+      setBusy(false);
+    }
+  };
+  useEffect(() => {
+    const pairingId = pairing?.pairing?.id;
+    if (!pairingId || (pairing.pairing.status !== 'waiting' && party.runner?.online)) return;
+    const refresh = async () => {
+      try {
+        const value = await api<any>(`/agent-pairings/${pairingId}`, { cache: 'no-store' });
+        setPairing((current: any) => (current ? { ...current, pairing: value.pairing } : current));
+        if (value.pairing.status === 'connected') await load();
+      } catch {
+        // The next poll can recover a transient network failure.
+      }
+    };
+    const interval = window.setInterval(() => void refresh(), 2000);
+    return () => window.clearInterval(interval);
+  }, [pairing?.pairing?.id, pairing?.pairing?.status, party.runner?.online, load]);
   const ready = async () => {
     setBusy(true);
     await api(`/conflicts/${id}/ready`, { method: 'POST', body: '{"ready":true}' });
     await load();
     setBusy(false);
   };
+  const canRemove = !['active', 'paused', 'judging'].includes(conflictStatus);
   return (
     <section className="rail-section">
       <div className="rail-label">
-        YOUR REPRESENTATIVE <span>{party.agent_bound ? 'CONNECTED' : 'ACTION NEEDED'}</span>
+        YOUR REPRESENTATIVE{' '}
+        <span className={`runner-label ${party.runner?.state ?? 'reconnect_required'}`}>
+          {party.runner?.state === 'working'
+            ? 'WORKING'
+            : party.runner?.online
+              ? 'RUNNER ONLINE'
+              : party.runner?.state === 'reconnecting'
+                ? 'RECONNECTING'
+                : 'RECONNECT REQUIRED'}
+        </span>
       </div>
-      <div className="agent-rail-card">
+      <div className={`agent-rail-card runner-${party.runner?.state ?? 'reconnect_required'}`}>
         <Bot />
         <div>
-          <strong>{party.agent_bound ? 'Agent connected' : 'Connect an agent'}</strong>
+          <strong>
+            {party.runner?.state === 'working'
+              ? 'Runner is working'
+              : party.runner?.online
+                ? 'Runner is online'
+                : party.runner?.state === 'reconnecting'
+                  ? 'Runner is reconnecting'
+                  : party.agent_bound
+                    ? 'Reconnect your Runner'
+                    : 'Connect your Runner'}
+          </strong>
           <p>
-            {party.agent_bound
-              ? 'The credential can discover and act on this conflict.'
-              : 'Choose one of your authorized external agents.'}
+            {party.runner?.state === 'working'
+              ? 'A turn is being prepared locally. Private context stays on this authorized connection.'
+              : party.runner?.online
+                ? `Automatic turns are enabled${party.runner.device_name ? ` on ${party.runner.device_name}` : ''}. You may close this page.`
+                : party.runner?.state === 'reconnecting'
+                  ? 'The local service is retrying automatically. If it remains offline, use Reconnect Runner.'
+                  : party.agent_bound
+                    ? `The Agent identity is authorized, but no live Runner is available${party.runner?.last_seen_at ? ` (last seen ${new Date(party.runner.last_seen_at).toLocaleString()})` : ''}.`
+                    : 'Send one short-lived instruction to Codex. It installs a local service that stays connected.'}
           </p>
         </div>
-        {party.agent_bound ? (
-          <button
-            className="button secondary wide"
-            disabled={party.ready || busy}
-            onClick={() => void ready()}
-          >
-            {party.ready ? (
-              <>
-                <Check />
-                Ready
-              </>
-            ) : busy ? (
-              'Saving…'
-            ) : (
-              'I’m ready'
-            )}
-          </button>
-        ) : agents.length ? (
-          <select
-            aria-label="Select agent"
-            disabled={busy}
-            defaultValue=""
-            onChange={(e) => void bind(e.target.value)}
-          >
-            <option value="" disabled>
-              Select agent…
-            </option>
-            {agents
-              .filter((a) => a.status === 'active')
-              .map((a) => (
-                <option key={a.id} value={a.id}>
-                  {a.name}
-                </option>
-              ))}
-          </select>
+        {party.runner?.online ? (
+          <>
+            <button
+              className="button secondary wide"
+              disabled={party.ready || busy}
+              onClick={() => void ready()}
+            >
+              {party.ready ? (
+                <>
+                  <Check />
+                  Ready
+                </>
+              ) : busy ? (
+                'Saving…'
+              ) : (
+                'I’m ready'
+              )}
+            </button>
+            <button
+              className="agent-developer-link"
+              disabled={busy}
+              onClick={() => void startPairing()}
+            >
+              Reconnect Runner →
+            </button>
+          </>
         ) : (
-          <Link className="button secondary wide" to="/agents">
-            Create an agent
-          </Link>
+          <>
+            <button className="button wide" disabled={busy} onClick={() => void startPairing()}>
+              {busy ? <LoaderCircle className="spin" /> : <Link2 />}
+              {party.agent_bound ? 'Reconnect Runner' : 'Connect Runner'}
+            </button>
+            {pairingError && (
+              <p className="form-error" role="alert">
+                {pairingError}
+              </p>
+            )}
+            {agents.some((agent) => agent.status === 'active') && !party.agent_bound && (
+              <details className="existing-agent-options">
+                <summary>Use an existing agent</summary>
+                <select
+                  aria-label="Select an existing agent"
+                  disabled={busy}
+                  defaultValue=""
+                  onChange={(event) => void bind(event.target.value)}
+                >
+                  <option value="" disabled>
+                    Select agent…
+                  </option>
+                  {agents
+                    .filter((agent) => agent.status === 'active')
+                    .map((agent) => (
+                      <option key={agent.id} value={agent.id}>
+                        {agent.name}
+                      </option>
+                    ))}
+                </select>
+              </details>
+            )}
+            <Link className="agent-developer-link" to="/agents">
+              Developer options →
+            </Link>
+          </>
+        )}
+        {party.agent_bound && canRemove && (
+          <button
+            className="agent-developer-link agent-remove-link"
+            disabled={busy}
+            onClick={() => setRemoveOpen(true)}
+          >
+            <Unplug /> Remove agent
+          </button>
         )}
       </div>
+      <Dialog
+        open={Boolean(pairing)}
+        onClose={() => setPairing(null)}
+        title={
+          pairing?.pairing?.status === 'connected' && party.runner?.online
+            ? 'Runner online'
+            : pairing?.pairing?.status === 'connected'
+              ? 'Starting local Runner'
+              : 'Connect your Runner'
+        }
+        description={
+          pairing?.pairing?.status === 'connected' && party.runner?.online
+            ? 'ResolveRoom can now push authorized turns to this computer automatically.'
+            : pairing?.pairing?.status === 'connected'
+              ? 'Authorization succeeded. Waiting for the local background service to report online.'
+              : 'Copy one instruction into a Codex task. It uses Codex’s bundled runtime, pairs once, and installs a self-contained background Runner.'
+        }
+      >
+        {pairing && (
+          <div className="pairing-flow" aria-live="polite">
+            <ol className="pairing-progress" aria-label="Pairing progress">
+              <li className="done">1 · Code</li>
+              <li className={pairing.pairing.status === 'waiting' ? 'current' : 'done'}>
+                2 · Send
+              </li>
+              <li className={pairing.pairing.status === 'connected' ? 'done' : ''}>
+                3 · Connected
+              </li>
+            </ol>
+            {pairingError && (
+              <p className="form-error" role="alert">
+                {pairingError}
+              </p>
+            )}
+            {pairing.pairing.status === 'connected' && party.runner?.online ? (
+              <div className="pairing-success">
+                <span>
+                  <Check />
+                </span>
+                <h3>Runner is online</h3>
+                <p>
+                  {party.runner.device_name ?? pairing.pairing.client_name ?? 'This computer'}{' '}
+                  connected{' '}
+                  {pairing.pairing.claimed_at
+                    ? new Date(pairing.pairing.claimed_at).toLocaleTimeString()
+                    : 'just now'}
+                  .
+                </p>
+                <button className="button wide" onClick={() => setPairing(null)}>
+                  Continue briefing
+                </button>
+              </div>
+            ) : pairing.pairing.status === 'connected' ? (
+              <div className="pairing-success pending">
+                <span>
+                  <LoaderCircle className="spin" />
+                </span>
+                <h3>Authorization complete</h3>
+                <p>
+                  Codex is installing and starting the local Runner. This normally takes less than a
+                  minute; the page will update automatically.
+                </p>
+                <p>
+                  If Codex reported an installation or startup error, finish the setup with the
+                  recovery instruction below. The credential is already stored, so this does not
+                  need or consume another pairing code.
+                </p>
+                <button
+                  className="button secondary wide"
+                  onClick={async () => {
+                    try {
+                      await copyText(pairing.recovery_instruction);
+                      setCopiedRecovery(true);
+                    } catch (error) {
+                      setPairingError(
+                        error instanceof Error ? error.message : 'Could not copy the instruction.',
+                      );
+                    }
+                  }}
+                >
+                  {copiedRecovery ? <Check /> : <Copy />}
+                  {copiedRecovery
+                    ? 'Recovery instruction copied'
+                    : 'Copy Runner recovery instruction'}
+                </button>
+              </div>
+            ) : pairing.pairing.status === 'waiting' ? (
+              <>
+                <div className="pairing-code">
+                  <small>ONE-TIME PAIRING CODE</small>
+                  <strong>{pairing.code}</strong>
+                  <span>Expires {new Date(pairing.pairing.expires_at).toLocaleTimeString()}</span>
+                </div>
+                <button
+                  className="button large wide"
+                  onClick={async () => {
+                    try {
+                      await copyText(pairing.instruction);
+                      setCopied(true);
+                    } catch (error) {
+                      setPairingError(
+                        error instanceof Error ? error.message : 'Could not copy the instruction.',
+                      );
+                    }
+                  }}
+                >
+                  {copied ? <Check /> : <Copy />}
+                  {copied ? 'Instruction copied' : 'Copy one-time connection instruction'}
+                </button>
+                <div className="pairing-safety">
+                  <ShieldCheck />
+                  <p>
+                    This code contains no long-lived credential. It works once, expires in ten
+                    minutes, and installs a self-contained Runner that reconnects automatically
+                    after restarts—even if the system Node.js installation is unavailable.
+                  </p>
+                </div>
+                <p className="pairing-waiting">
+                  <LoaderCircle className="spin" /> Waiting for Codex to connect…
+                </p>
+              </>
+            ) : (
+              <div className="pairing-expired">
+                <AlertTriangle />
+                <h3>This pairing code is no longer available</h3>
+                <p>Generate a fresh single-use instruction and send that one to Codex.</p>
+                <button className="button wide" onClick={() => void startPairing()}>
+                  <RefreshCw /> Generate new code
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+      </Dialog>
+      <AgentRemovalDialog
+        open={removeOpen}
+        agent={
+          party.agent_id
+            ? {
+                id: party.agent_id,
+                name: agents.find((agent) => agent.id === party.agent_id)?.name ?? 'this agent',
+              }
+            : null
+        }
+        onClose={() => setRemoveOpen(false)}
+        onRemoved={async () => {
+          setPairing(null);
+          setPairingError('');
+          await load();
+        }}
+      />
     </section>
   );
 }
@@ -733,7 +1068,7 @@ function SettingsPanel({
   const create = async () => {
     setCreating(true);
     const value = await api<any>(`/conflicts/${id}/share-links`, { method: 'POST', body: '{}' });
-    await navigator.clipboard.writeText(value.share_link.url);
+    await copyText(value.share_link.url);
     await load();
     setCreating(false);
   };
@@ -752,8 +1087,10 @@ function SettingsPanel({
             <span>
               <h3>Unlisted observer links</h3>
               <p>
-                Safe transcript and verdict only. Private events are filtered from the canonical
-                record.
+                {data.conflict.judge_available
+                  ? 'Safe transcript and verdict only.'
+                  : 'Safe transcript only.'}{' '}
+                Private events are filtered from the canonical record.
               </p>
             </span>
           </div>

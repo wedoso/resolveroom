@@ -19,13 +19,21 @@ migrations_dir = "migrations"
 name = "CONFLICT_ROOMS"
 class_name = "ConflictRoom"
 
+[[durable_objects.bindings]]
+name = "AGENT_RUNNERS"
+class_name = "AgentRunner"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["ConflictRoom"]
 
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["AgentRunner"]
+
 [vars]
 ENVIRONMENT = "production"
-JUDGE_PROVIDER = "mock"
+JUDGE_PROVIDER = "disabled"
 EMAIL_PROVIDER = "console"
 PUBLIC_APP_URL = "https://replace-with-production-domain.example"
 

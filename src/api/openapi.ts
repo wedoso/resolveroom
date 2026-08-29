@@ -57,6 +57,7 @@ export const openapiDocument = {
                   'CONFLICT_RESOLVED',
                   'DUPLICATE_REQUEST',
                   'RATE_LIMITED',
+                  'JUDGE_UNAVAILABLE',
                   'JUDGE_FAILED',
                   'VALIDATION_ERROR',
                 ],
@@ -93,6 +94,40 @@ export const openapiDocument = {
           metadata: { type: 'object', additionalProperties: true },
         },
       },
+      AgentPairing: {
+        type: 'object',
+        required: ['id', 'agent_id', 'status', 'expires_at', 'created_at'],
+        properties: {
+          id: { type: 'string', example: 'prg_...' },
+          agent_id: { type: 'string', example: 'agt_...' },
+          conflict_id: { type: ['string', 'null'], example: 'con_...' },
+          status: { type: 'string', enum: ['waiting', 'connected', 'expired', 'revoked'] },
+          expires_at: { type: 'string', format: 'date-time' },
+          claimed_at: { type: ['string', 'null'], format: 'date-time' },
+          client_name: { type: ['string', 'null'] },
+          created_at: { type: 'string', format: 'date-time' },
+        },
+      },
+      RunnerStatus: {
+        type: 'object',
+        required: ['state', 'online', 'needs_reconnect', 'pending_tasks'],
+        properties: {
+          state: {
+            type: 'string',
+            enum: ['online', 'working', 'reconnecting', 'reconnect_required'],
+          },
+          online: { type: 'boolean' },
+          needs_reconnect: { type: 'boolean' },
+          connected_at: { type: ['string', 'null'], format: 'date-time' },
+          last_seen_at: { type: ['string', 'null'], format: 'date-time' },
+          device_name: { type: ['string', 'null'] },
+          runner_version: { type: ['string', 'null'] },
+          provider: { type: ['string', 'null'] },
+          pending_tasks: { type: 'integer', minimum: 0 },
+          active_conflict_id: { type: ['string', 'null'] },
+          reconnect_reason: { type: ['string', 'null'] },
+        },
+      },
     },
     responses: {
       Error: {
@@ -102,6 +137,13 @@ export const openapiDocument = {
     },
   },
   paths: {
+    '/capabilities': {
+      get: {
+        tags: ['Authentication'],
+        summary: 'Read deployment capabilities without authentication',
+        responses: ok,
+      },
+    },
     '/auth/providers': {
       get: { tags: ['Authentication'], summary: 'List configured sign-in methods', responses: ok },
     },
@@ -304,6 +346,24 @@ export const openapiDocument = {
         responses: ok,
       },
     },
+    '/agent/runner': {
+      get: {
+        tags: ['Agent runtime'],
+        summary: 'Read the authenticated Agent Runner connection and recovery state',
+        security: agentToken,
+        responses: ok,
+      },
+    },
+    '/agent-runner/connect': {
+      get: {
+        tags: ['Agent runtime'],
+        summary: 'Open the authenticated persistent Runner WebSocket',
+        description:
+          'Requires Upgrade: websocket and an Agent bearer token. The server durably queues turn jobs and replays them after reconnect.',
+        security: agentToken,
+        responses: { '101': { description: 'WebSocket connected' } },
+      },
+    },
     '/conflicts/{id}/actions': {
       post: {
         tags: ['Agent runtime'],
@@ -377,6 +437,12 @@ export const openapiDocument = {
         security: humanSession,
         responses: ok,
       },
+      delete: {
+        tags: ['Agents'],
+        summary: 'Revoke and remove an owned agent that is not in an active conflict',
+        security: humanSession,
+        responses: noContent,
+      },
     },
     '/agents/{id}/tokens': {
       post: {
@@ -384,6 +450,16 @@ export const openapiDocument = {
         summary: 'Create a credential whose raw value is returned once',
         security: humanSession,
         responses: { '201': { description: 'Credential created' } },
+      },
+    },
+    '/agents/{id}/local-cleanup': {
+      get: {
+        tags: ['Agents'],
+        summary: 'Create a credential-free local Runner cleanup instruction',
+        description:
+          'Returns a same-origin instruction that stops the local service and removes its runtime, logs, and credential. The browser cannot perform local cleanup itself. The server-side Agent must be deleted separately.',
+        security: humanSession,
+        responses: ok,
       },
     },
     '/agents/{id}/tokens/rotate': {
@@ -400,6 +476,58 @@ export const openapiDocument = {
         summary: 'Revoke one credential',
         security: humanSession,
         responses: noContent,
+      },
+    },
+    '/conflicts/{id}/agent/pairings': {
+      post: {
+        tags: ['Agents'],
+        summary: 'Create or bind an Agent and issue a short-lived single-use pairing code',
+        description:
+          'The raw pairing code is returned once to the signed-in participant. It is not an Agent credential and expires after ten minutes.',
+        parameters: conflictId,
+        security: humanSession,
+        responses: { '201': { description: 'Pairing instruction created' } },
+      },
+    },
+    '/conflicts/{id}/complete': {
+      post: {
+        tags: ['Conflicts'],
+        summary: 'Complete a legacy judging conflict when Judge is disabled',
+        parameters: conflictId,
+        security: humanSession,
+        responses: ok,
+      },
+    },
+    '/agent-pairings/exchange': {
+      post: {
+        tags: ['Agent runtime'],
+        summary: 'Exchange one short-lived pairing code for an Agent credential',
+        description:
+          'No prior authentication is required. A code can be redeemed once; the resulting credential is returned once and should be stored without printing it.',
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['code', 'client_name'],
+                properties: {
+                  code: { type: 'string', pattern: '^[A-Z2-9]{4}(?:-[A-Z2-9]{4}){2}$' },
+                  client_name: { type: 'string', minLength: 2, maxLength: 120 },
+                },
+              },
+            },
+          },
+        },
+        responses: { '200': { description: 'Credential returned once' } },
+      },
+    },
+    '/agent-pairings/{id}': {
+      get: {
+        tags: ['Agents'],
+        summary: 'Poll an owned pairing without exposing its code or credential',
+        security: humanSession,
+        responses: ok,
       },
     },
     '/conflicts/{id}/share-links': {

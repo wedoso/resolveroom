@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "targets": {
+    "/agents": {
+      "targetKind": "existing-ui",
+      "projectId": "2fdb39d2-a5c7-4117-9ddb-fe4b07fa2a78",
+      "baselineDraftId": "de0f80bf-1738-4134-a4f8-afdaf6002b10",
+      "activeDraftId": "de0f80bf-1738-4134-a4f8-afdaf6002b10",
+      "designSystemPath": ".superdesign/design-system.md",
+      "referenceIds": ["68ac3625-e0e4-4e52-8ae1-be4db8e874d3"],
+      "contextFiles": [
+        ".superdesign/design-system.md",
+        ".superdesign/init/theme.md",
+        "src/web/components.tsx",
+        "src/web/pages.tsx:656:875",
+        "src/web/agent-removal.tsx",
+        "src/web/conflict-room.tsx:390:850",
+        "src/web/styles.css:1:260",
+        "src/web/styles.css:600:720",
+        "src/web/styles.css:988:1145",
+        "src/web/styles.css:1205:1305",
+        "src/web/styles.css:1580:1945",
+        "src/web/styles.css:2320:2420"
+      ],
+      "fingerprints": {
+        ".superdesign/design-system.md": "cc81bcf0fc4a8556c66fb5f41090a8172500a285a0f9c83ea701994a94195833",
+        ".superdesign/init/theme.md": "7879434ef33dd84b5816af690d96c6a0c1419b267fbbced661379757410b6cd9",
+        "src/web/components.tsx": "80c82c0a0a71ddf74c722820a156e9c1af2bf889dd34d08a5f19d66ad35c5c83",
+        "src/web/pages.tsx": "2d4652dfe37f6dbb6d2037edb2a2628648ea8e829e1d3772b854d1ccef881877",
+        "src/web/agent-removal.tsx": "4d2c895bd285ffb14a395b4e9ae903433e9364061aeb82d3e27bdc8954f9cf79",
+        "src/web/conflict-room.tsx": "3f79d4aa5f69a465bc2053996182c9560927cecb070784fa3689250416c8c5e1",
+        "src/web/styles.css": "a2a8c801076e6975cc6d1153db79170bc7f4a312824cb4431c5695482c78a6b3"
+      },
+      "components": [
+        {
+          "name": "AppShell",
+          "id": "77588322-2b34-46d7-8a3b-720c4862bf78",
+          "sourcePath": "src/web/components.tsx"
+        }
+      ],
+      "drafts": {
+        "de0f80bf-1738-4134-a4f8-afdaf6002b10": {
+          "title": "ResolveRoom — Your agents (Deletion Options)",
+          "visualDirection": "two-step local Runner cleanup and permanent server-side agent removal with explicit safety acknowledgement",
+          "currentVersion": 5
+        }
+      },
+      "updatedAt": "2026-08-29T02:28:03Z"
+    }
+  }
+}

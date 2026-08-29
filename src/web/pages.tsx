@@ -6,16 +6,22 @@ import {
   Clock3,
   Code2,
   Copy,
+  CircleAlert,
   KeyRound,
   LockKeyhole,
   Plus,
+  Radio,
+  RefreshCw,
   ShieldCheck,
   Sparkles,
+  Trash2,
   UsersRound,
 } from 'lucide-react';
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { Link, Navigate, useNavigate, useParams } from 'react-router-dom';
 import { api, relativeTime } from './api';
+import { copyText } from './clipboard';
+import { AgentRemovalDialog } from './agent-removal';
 import {
   AppShell,
   Brand,
@@ -29,6 +35,12 @@ import {
 
 export function LandingPage() {
   const { user } = useAuth();
+  const [judgeAvailable, setJudgeAvailable] = useState(false);
+  useEffect(() => {
+    api<any>('/capabilities')
+      .then((value) => setJudgeAvailable(Boolean(value.judge?.available)))
+      .catch(() => setJudgeAvailable(false));
+  }, []);
   return (
     <div className="landing">
       <header className="marketing-nav">
@@ -66,7 +78,7 @@ export function LandingPage() {
             </h1>
             <p>
               ResolveRoom gives two people a neutral, private place where their agents can debate or
-              persuade under a clear protocol—and produce a transparent, reviewable verdict.
+              persuade under a clear protocol—and produce a transparent, reviewable record.
             </p>
             <div className="hero-actions">
               <Link className="button large" to={user ? '/conflicts/new' : '/signin'}>
@@ -82,7 +94,7 @@ export function LandingPage() {
               Agents can work asynchronously
             </div>
           </div>
-          <CasePreview />
+          <CasePreview judgeAvailable={judgeAvailable} />
         </section>
         <section id="how" className="how-section">
           <div className="section-intro">
@@ -109,8 +121,12 @@ export function LandingPage() {
             <Step
               n="03"
               icon={<Sparkles />}
-              title="Review the verdict"
-              text="A neutral Judge produces a validated, advisory assessment with cited moments from the record."
+              title={judgeAvailable ? 'Review the verdict' : 'Keep the record'}
+              text={
+                judgeAvailable
+                  ? 'A neutral Judge produces a validated, advisory assessment with cited moments from the record.'
+                  : 'Return to a durable, permission-filtered transcript after the agents complete their exchange.'
+              }
             />
           </div>
         </section>
@@ -120,8 +136,7 @@ export function LandingPage() {
             <h2>Your private context stays on your side of the room.</h2>
             <p>
               Private briefs are permission-isolated from the opposing participant, opposing agent,
-              observers, and the Judge. Sharing is always explicit, unlisted, read-only, and
-              revocable.
+              and observers. Sharing is always explicit, unlisted, read-only, and revocable.
             </p>
             <Link className="text-link arrow" to="/signin">
               Start a private room <ArrowRight />
@@ -150,7 +165,7 @@ export function LandingPage() {
     </div>
   );
 }
-function CasePreview() {
+function CasePreview({ judgeAvailable }: { judgeAvailable: boolean }) {
   return (
     <div className="case-preview" aria-label="Example active conflict">
       <div className="preview-head">
@@ -178,7 +193,7 @@ function CasePreview() {
         <span className="done">Opening</span>
         <span className="current">Rebuttal</span>
         <span>Closing</span>
-        <span>Verdict</span>
+        <span>{judgeAvailable ? 'Verdict' : 'Record'}</span>
       </div>
       <div className="preview-record">
         <article className="a">
@@ -399,11 +414,15 @@ function ConflictCard({ conflict: c }: { conflict: any }) {
       <div className="conflict-next">
         <span>
           {c.status === 'resolved'
-            ? 'Assessment ready'
+            ? c.judge_available
+              ? 'Assessment ready'
+              : 'Exchange complete'
             : attention
               ? 'Your agent’s turn'
               : c.status === 'judging'
-                ? 'Judge evaluating'
+                ? c.judge_available
+                  ? 'Judge evaluating'
+                  : 'Exchange complete'
                 : c.status === 'inviting'
                   ? 'Invitation pending'
                   : `Waiting for ${c.opponent.display_name}`}
@@ -496,7 +515,7 @@ export function NewConflictPage() {
                   <UsersRound />
                   <strong>Debate</strong>
                   <small>
-                    Both agents advocate their side. The Judge assesses which case was stronger.
+                    Both agents advocate their side in a structured, reviewable exchange.
                   </small>
                 </span>
               </label>
@@ -658,27 +677,28 @@ export function AgentsPage() {
   const [error, setError] = useState('');
   const [createOpen, setCreateOpen] = useState(false);
   const [token, setToken] = useState<any>(null);
+  const [deleteTarget, setDeleteTarget] = useState<any>(null);
   const load = () =>
     api<any>('/agents')
-      .then((v) => setAgents(v.agents))
+      .then((v) => {
+        setAgents(v.agents);
+        setError('');
+      })
       .catch((e) => setError(e.message));
   useEffect(() => {
     void load();
+    const interval = window.setInterval(() => void load(), 10_000);
+    return () => window.clearInterval(interval);
   }, []);
   const create = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
-    const value = await api<any>('/agents', {
+    await api<any>('/agents', {
       method: 'POST',
       body: JSON.stringify({ name: form.get('name') }),
     });
     setCreateOpen(false);
-    const credential = await api<any>(`/agents/${value.agent.id}/tokens`, {
-      method: 'POST',
-      body: '{}',
-    });
-    setToken(credential.token);
-    load();
+    await load();
   };
   if (!agents && !error)
     return (
@@ -693,7 +713,7 @@ export function AgentsPage() {
           <div>
             <span className="eyebrow">EXTERNAL REPRESENTATIVES</span>
             <h1>Your agents</h1>
-            <p>Create an identity for any external agent, then issue a revocable API credential.</p>
+            <p>Manage representative identities, connections, and developer credentials.</p>
           </div>
           <button className="button" onClick={() => setCreateOpen(true)}>
             <Plus />
@@ -703,10 +723,10 @@ export function AgentsPage() {
         <div className="integration-note">
           <Code2 />
           <div>
-            <strong>Bring your own agent</strong>
+            <strong>Connect from a conflict</strong>
             <p>
-              Any model or framework can use the Parley REST API. ResolveRoom never needs access to
-              the agent’s underlying provider account.
+              Most people can connect Codex with one short-lived instruction inside the conflict
+              room. The API contract remains available for custom agent runtimes.
             </p>
           </div>
           <a href="/openapi.json">
@@ -720,7 +740,8 @@ export function AgentsPage() {
         ) : agents?.length === 0 ? (
           <StatePanel title="No agents authorized">
             <p>
-              Create one agent identity, then store its one-time credential in your agent runtime.
+              Agent identities are created automatically when you connect Codex from a conflict, or
+              you can create one here for a custom runtime.
             </p>
             <button className="button" onClick={() => setCreateOpen(true)}>
               Create your first agent
@@ -740,22 +761,44 @@ export function AgentsPage() {
                   </div>
                   <h2>{agent.name}</h2>
                   <p>Created {relativeTime(agent.createdAt)}</p>
+                  <RunnerSummary runner={agent.runner} activeConflict={agent.active_conflict} />
                 </div>
-                <div className="agent-actions">
-                  <button
-                    className="button secondary"
-                    onClick={async () => {
-                      const value = await api<any>(`/agents/${agent.id}/tokens/rotate`, {
-                        method: 'POST',
-                        body: '{}',
-                      });
-                      setToken(value.token);
-                    }}
-                  >
-                    <KeyRound />
-                    Rotate credential
-                  </button>
-                </div>
+                <details className="agent-actions developer-options">
+                  <summary>Developer options</summary>
+                  <div className="developer-actions">
+                    <p>Raw credentials are only for custom agent runtimes.</p>
+                    <button
+                      className="button secondary"
+                      onClick={async () => {
+                        const value = await api<any>(`/agents/${agent.id}/tokens/rotate`, {
+                          method: 'POST',
+                          body: '{}',
+                        });
+                        setToken(value.token);
+                      }}
+                    >
+                      <KeyRound />
+                      Issue / rotate API credential
+                    </button>
+                    <button
+                      className="developer-delete"
+                      disabled={agent.deletion_blocked}
+                      onClick={() => setDeleteTarget(agent)}
+                    >
+                      <Trash2 />
+                      Delete agent
+                    </button>
+                    {agent.deletion_blocked && (
+                      <p className="agent-delete-blocked">
+                        Cannot delete while assigned to{' '}
+                        <Link to={`/conflicts/${agent.active_conflict.id}`}>
+                          {agent.active_conflict.title}
+                        </Link>
+                        . Resolve or cancel that conflict first.
+                      </p>
+                    )}
+                  </div>
+                </details>
               </article>
             ))}
           </div>
@@ -777,14 +820,14 @@ export function AgentsPage() {
                 autoFocus
               />
             </label>
-            <button className="button wide">Create and issue credential</button>
+            <button className="button wide">Create agent identity</button>
           </form>
         </Dialog>
         <Dialog
           open={Boolean(token)}
           onClose={() => setToken(null)}
-          title="Store this credential now"
-          description="For security, ResolveRoom will never show the raw token again."
+          title="Developer credential"
+          description="This advanced option is for custom API runtimes. ResolveRoom will never show the raw token again."
         >
           {token && (
             <div className="token-reveal">
@@ -793,7 +836,7 @@ export function AgentsPage() {
                 <button
                   className="icon-button"
                   aria-label="Copy credential"
-                  onClick={() => void navigator.clipboard.writeText(token.value)}
+                  onClick={() => void copyText(token.value)}
                 >
                   <Copy />
                 </button>
@@ -809,8 +852,71 @@ export function AgentsPage() {
             </div>
           )}
         </Dialog>
+        <AgentRemovalDialog
+          open={Boolean(deleteTarget)}
+          agent={deleteTarget}
+          onClose={() => setDeleteTarget(null)}
+          onRemoved={load}
+        />
       </main>
     </AppShell>
+  );
+}
+
+function RunnerSummary({ runner, activeConflict }: { runner: any; activeConflict: any }) {
+  const state = runner?.state ?? 'reconnect_required';
+  const working = state === 'working';
+  const online = state === 'online' || working;
+  const reconnecting = state === 'reconnecting';
+  return (
+    <div className={`runner-summary ${state}`} aria-live="polite">
+      <div className="runner-summary-heading">
+        <span className="runner-state-icon" aria-hidden="true">
+          {online ? <Radio /> : reconnecting ? <RefreshCw className="spin" /> : <CircleAlert />}
+        </span>
+        <span>
+          <strong>
+            {working
+              ? 'Runner working'
+              : online
+                ? 'Runner online'
+                : reconnecting
+                  ? 'Runner reconnecting'
+                  : 'Runner reconnect required'}
+          </strong>
+          <small>
+            {working
+              ? 'Securely preparing an authorized turn.'
+              : online
+                ? 'Automatic turns are enabled.'
+                : reconnecting
+                  ? 'It is retrying automatically. No action is needed yet.'
+                  : runner?.last_seen_at
+                    ? `Last seen ${relativeTime(runner.last_seen_at)}.`
+                    : 'This Agent identity has not connected a live Runner yet.'}
+          </small>
+        </span>
+      </div>
+      <dl className="runner-facts">
+        <div>
+          <dt>Device</dt>
+          <dd>{runner?.device_name ?? 'Not reported'}</dd>
+        </div>
+        <div>
+          <dt>Provider</dt>
+          <dd>{runner?.provider === 'codex' ? 'Local Codex' : (runner?.provider ?? 'Unknown')}</dd>
+        </div>
+      </dl>
+      {!online && !reconnecting && (
+        <p className="runner-recovery">
+          {activeConflict ? (
+            <Link to={`/conflicts/${activeConflict.id}`}>Open conflict and reconnect Runner →</Link>
+          ) : (
+            'Assign this Agent to a conflict to generate a fresh one-time reconnect instruction.'
+          )}
+        </p>
+      )}
+    </div>
   );
 }
 
@@ -838,7 +944,7 @@ export function NotificationsPage() {
         </div>
         {data.length === 0 ? (
           <StatePanel title="You’re all caught up">
-            <p>New invitations, turns, pauses, and verdicts will appear here.</p>
+            <p>New invitations, turns, pauses, and completed outcomes will appear here.</p>
           </StatePanel>
         ) : (
           <div className="notification-list">
@@ -928,7 +1034,7 @@ export function SharePage() {
           <div>
             <strong>This is a permission-filtered observer record.</strong>
             <p>
-              Private briefs, Judge-only submissions, email addresses, and API credentials are never
+              Private briefs, restricted records, email addresses, and API credentials are never
               included.
             </p>
           </div>
@@ -936,7 +1042,11 @@ export function SharePage() {
       </main>
       <footer>
         <Brand />
-        <p>AI-generated assessments are advisory and non-binding.</p>
+        <p>
+          {data.verdict
+            ? 'AI-generated assessments are advisory and non-binding.'
+            : 'Observer records are read-only and permission-filtered.'}
+        </p>
       </footer>
     </div>
   );

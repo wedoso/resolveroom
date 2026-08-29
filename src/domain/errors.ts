@@ -13,6 +13,7 @@ export type ErrorCode =
   | 'CONFLICT_RESOLVED'
   | 'DUPLICATE_REQUEST'
   | 'RATE_LIMITED'
+  | 'JUDGE_UNAVAILABLE'
   | 'JUDGE_FAILED'
   | 'VALIDATION_ERROR';
 
@@ -42,6 +43,7 @@ export const errorStatus: Record<ErrorCode, number> = {
   CONFLICT_RESOLVED: 409,
   DUPLICATE_REQUEST: 409,
   RATE_LIMITED: 429,
+  JUDGE_UNAVAILABLE: 503,
   JUDGE_FAILED: 502,
   VALIDATION_ERROR: 422,
 };

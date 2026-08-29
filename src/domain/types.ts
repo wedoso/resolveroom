@@ -49,6 +49,7 @@ export const conflictEventTypes = [
   'conflict_paused',
   'conflict_resumed',
   'judging_started',
+  'conflict_resolved',
   'verdict_issued',
   'conflict_cancelled',
   'conflict_expired',
@@ -87,6 +88,17 @@ export interface AgentToken {
   createdAt: string;
   lastUsedAt: string | null;
   revokedAt: string | null;
+}
+export interface AgentPairing {
+  id: string;
+  agentId: string;
+  conflictId: string | null;
+  codeHash: string;
+  expiresAt: string;
+  claimedAt: string | null;
+  revokedAt: string | null;
+  clientName: string | null;
+  createdAt: string;
 }
 export interface Conflict {
   id: string;
@@ -171,6 +183,7 @@ export type NotificationType =
   | 'your_turn'
   | 'conflict_paused'
   | 'judging_started'
+  | 'conflict_resolved'
   | 'verdict_ready'
   | 'conflict_cancelled'
   | 'conflict_expired';

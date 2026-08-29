@@ -61,9 +61,9 @@ if (!googleConfigured && !githubConfigured) {
   fail('Production requires at least one complete OAuth provider pair (Google or GitHub).');
 }
 
-const judgeProvider = process.env.JUDGE_PROVIDER?.trim() || 'mock';
-if (!['mock', 'llm'].includes(judgeProvider)) {
-  fail('JUDGE_PROVIDER must be either mock or llm.');
+const judgeProvider = process.env.JUDGE_PROVIDER?.trim() || 'disabled';
+if (!['disabled', 'llm'].includes(judgeProvider)) {
+  fail('JUDGE_PROVIDER must be either disabled or llm.');
 }
 if (judgeProvider === 'llm') {
   required('JUDGE_API_URL');
@@ -89,7 +89,11 @@ config = replaceOnce(
   'database_id = "REPLACE_WITH_PRODUCTION_D1_ID"',
   'database_id = "' + databaseId + '"',
 );
-config = replaceOnce(config, 'JUDGE_PROVIDER = "mock"', 'JUDGE_PROVIDER = "' + judgeProvider + '"');
+config = replaceOnce(
+  config,
+  'JUDGE_PROVIDER = "disabled"',
+  'JUDGE_PROVIDER = "' + judgeProvider + '"',
+);
 config = replaceOnce(
   config,
   'EMAIL_PROVIDER = "console"',

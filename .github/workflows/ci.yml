@@ -26,10 +26,10 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Use Node.js 20
+      - name: Use Node.js 22
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
 
       - name: Install dependencies
@@ -40,6 +40,9 @@ jobs:
 
       - name: Run static, unit, integration, and build gates
         run: npm run check
+
+      - name: Run real two-client Agent debate gate
+        run: npm run test:agent-e2e
 
       - name: Run browser and accessibility gates
         run: npm run test:e2e

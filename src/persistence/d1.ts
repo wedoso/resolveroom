@@ -1,5 +1,6 @@
 import type {
   Agent,
+  AgentPairing,
   AgentToken,
   Conflict,
   ConflictEvent,
@@ -69,6 +70,17 @@ const tokenFrom = (r: any): AgentToken => ({
   createdAt: r.created_at,
   lastUsedAt: r.last_used_at,
   revokedAt: r.revoked_at,
+});
+const pairingFrom = (r: any): AgentPairing => ({
+  id: r.id,
+  agentId: r.agent_id,
+  conflictId: r.conflict_id,
+  codeHash: r.code_hash,
+  expiresAt: r.expires_at,
+  claimedAt: r.claimed_at,
+  revokedAt: r.revoked_at,
+  clientName: r.client_name,
+  createdAt: r.created_at,
 });
 const eventFrom = (r: any): ConflictEvent => ({
   id: r.id,
@@ -162,6 +174,11 @@ export class D1Store implements Database {
       this.db
         .prepare(
           'UPDATE agent_tokens SET revoked_at=COALESCE(revoked_at,?) WHERE agent_id IN (SELECT id FROM agents WHERE owner_user_id=?)',
+        )
+        .bind(timestamp, id),
+      this.db
+        .prepare(
+          'UPDATE agent_pairings SET revoked_at=COALESCE(revoked_at,?) WHERE agent_id IN (SELECT id FROM agents WHERE owner_user_id=?)',
         )
         .bind(timestamp, id),
     ]);
@@ -271,6 +288,15 @@ export class D1Store implements Database {
       .all();
     return r.results.map(conflictFrom);
   }
+  async listConflictsForAgent(aid: string) {
+    const r = await this.db
+      .prepare(
+        'SELECT c.* FROM conflicts c JOIN conflict_parties p ON p.conflict_id=c.id WHERE p.agent_id=? ORDER BY c.updated_at DESC',
+      )
+      .bind(aid)
+      .all();
+    return r.results.map(conflictFrom);
+  }
   async getParties(cid: string) {
     const r = await this.db
       .prepare('SELECT * FROM conflict_parties WHERE conflict_id=? ORDER BY role')
@@ -308,52 +334,59 @@ export class D1Store implements Database {
         .first();
       if (x) return { event: eventFrom(x), duplicate: true };
     }
-    const sequence =
-      (await this.db
-        .prepare(
-          'SELECT COALESCE(MAX(sequence_number),0)+1 next FROM conflict_events WHERE conflict_id=?',
-        )
-        .bind(input.conflictId)
-        .first<number>('next')) ?? 1;
-    const event: ConflictEvent = {
-      ...input,
-      id: opaqueId('evt'),
-      sequenceNumber: sequence,
-      createdAt: new Date().toISOString(),
-      payload: {
-        ...input.payload,
-        ...(input.clientRequestId ? { client_request_id: input.clientRequestId } : {}),
-      },
-    };
-    try {
-      await this.db
-        .prepare('INSERT INTO conflict_events VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')
-        .bind(
-          event.id,
-          event.conflictId,
-          event.sequenceNumber,
-          event.eventType,
-          event.actorType,
-          event.actorId,
-          event.partyId,
-          event.partyRole,
-          event.visibility,
-          JSON.stringify(event.payload),
-          input.clientRequestId ?? null,
-          event.createdAt,
-        )
-        .run();
-      return { event, duplicate: false };
-    } catch (error) {
-      if (input.clientRequestId) {
-        const x = await this.db
-          .prepare('SELECT * FROM conflict_events WHERE conflict_id=? AND client_request_id=?')
-          .bind(input.conflictId, input.clientRequestId)
-          .first();
-        if (x) return { event: eventFrom(x), duplicate: true };
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const sequence =
+        (await this.db
+          .prepare(
+            'SELECT COALESCE(MAX(sequence_number),0)+1 next FROM conflict_events WHERE conflict_id=?',
+          )
+          .bind(input.conflictId)
+          .first<number>('next')) ?? 1;
+      const event: ConflictEvent = {
+        ...input,
+        id: opaqueId('evt'),
+        sequenceNumber: sequence,
+        createdAt: new Date().toISOString(),
+        payload: {
+          ...input.payload,
+          ...(input.clientRequestId ? { client_request_id: input.clientRequestId } : {}),
+        },
+      };
+      try {
+        await this.db
+          .prepare('INSERT INTO conflict_events VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')
+          .bind(
+            event.id,
+            event.conflictId,
+            event.sequenceNumber,
+            event.eventType,
+            event.actorType,
+            event.actorId,
+            event.partyId,
+            event.partyRole,
+            event.visibility,
+            JSON.stringify(event.payload),
+            input.clientRequestId ?? null,
+            event.createdAt,
+          )
+          .run();
+        return { event, duplicate: false };
+      } catch (error) {
+        if (input.clientRequestId) {
+          const x = await this.db
+            .prepare('SELECT * FROM conflict_events WHERE conflict_id=? AND client_request_id=?')
+            .bind(input.conflictId, input.clientRequestId)
+            .first();
+          if (x) return { event: eventFrom(x), duplicate: true };
+        }
+        const sequenceRace =
+          String(error).includes('UNIQUE constraint failed') &&
+          String(error).includes('conflict_events.sequence_number');
+        if (sequenceRace && attempt < 4) continue;
+        throw error;
       }
-      throw error;
     }
+    throw new Error('Could not allocate a conflict event sequence number.');
   }
   async listEvents(cid: string) {
     const r = await this.db
@@ -400,10 +433,62 @@ export class D1Store implements Database {
   }
   async listAgents(uid: string) {
     const r = await this.db
-      .prepare('SELECT * FROM agents WHERE owner_user_id=? ORDER BY created_at DESC')
+      .prepare(
+        "SELECT * FROM agents WHERE owner_user_id=? AND status='active' ORDER BY created_at DESC",
+      )
       .bind(uid)
       .all();
     return r.results.map(agentFrom);
+  }
+  async revokeAgent(agentId: string, ownerUserId: string) {
+    const boundRows = await this.db
+      .prepare('SELECT * FROM conflict_parties WHERE agent_id=?')
+      .bind(agentId)
+      .all();
+    const unboundParties = boundRows.results.map(partyFrom);
+    const inUse = await this.db
+      .prepare(
+        "SELECT c.id FROM conflicts c JOIN conflict_parties p ON p.conflict_id=c.id WHERE p.agent_id=? AND c.status IN ('active','paused','judging') LIMIT 1",
+      )
+      .bind(agentId)
+      .first<string>('id');
+    if (inUse) return { status: 'in_use', conflictId: inUse } as const;
+    const revokedAt = new Date().toISOString();
+    const results = await this.db.batch([
+      this.db
+        .prepare(
+          "UPDATE agents SET status='revoked',updated_at=? WHERE id=? AND owner_user_id=? AND status='active' AND NOT EXISTS (SELECT 1 FROM conflict_parties p JOIN conflicts c ON c.id=p.conflict_id WHERE p.agent_id=agents.id AND c.status IN ('active','paused','judging'))",
+        )
+        .bind(revokedAt, agentId, ownerUserId),
+      this.db
+        .prepare(
+          "UPDATE conflict_parties SET agent_id=NULL,ready=0 WHERE agent_id=? AND EXISTS (SELECT 1 FROM agents WHERE id=? AND status='revoked' AND updated_at=?)",
+        )
+        .bind(agentId, agentId, revokedAt),
+      this.db
+        .prepare(
+          "UPDATE agent_tokens SET revoked_at=COALESCE(revoked_at,?) WHERE agent_id=? AND EXISTS (SELECT 1 FROM agents WHERE id=? AND status='revoked' AND updated_at=?)",
+        )
+        .bind(revokedAt, agentId, agentId, revokedAt),
+      this.db
+        .prepare(
+          "UPDATE agent_pairings SET revoked_at=? WHERE agent_id=? AND claimed_at IS NULL AND revoked_at IS NULL AND EXISTS (SELECT 1 FROM agents WHERE id=? AND status='revoked' AND updated_at=?)",
+        )
+        .bind(revokedAt, agentId, agentId, revokedAt),
+    ]);
+    if (results[0].meta.changes === 1) return { status: 'revoked', unboundParties } as const;
+    const agent = await this.getAgent(agentId);
+    if (!agent || agent.ownerUserId !== ownerUserId || agent.status !== 'active')
+      return { status: 'not_found' } as const;
+    const racedConflict = await this.db
+      .prepare(
+        "SELECT c.id FROM conflicts c JOIN conflict_parties p ON p.conflict_id=c.id WHERE p.agent_id=? AND c.status IN ('active','paused','judging') LIMIT 1",
+      )
+      .bind(agentId)
+      .first<string>('id');
+    return racedConflict
+      ? ({ status: 'in_use', conflictId: racedConflict } as const)
+      : ({ status: 'not_found' } as const);
   }
   async createAgentToken(t: AgentToken) {
     await this.db
@@ -433,6 +518,89 @@ export class D1Store implements Database {
       .prepare('UPDATE agent_tokens SET revoked_at=COALESCE(revoked_at,?) WHERE agent_id=?')
       .bind(new Date().toISOString(), aid)
       .run();
+  }
+  async hasActiveAgentToken(agentId: string) {
+    const count = await this.db
+      .prepare('SELECT COUNT(*) AS count FROM agent_tokens WHERE agent_id=? AND revoked_at IS NULL')
+      .bind(agentId)
+      .first<number>('count');
+    return (count ?? 0) > 0;
+  }
+  async createAgentPairing(pairing: AgentPairing) {
+    await this.db
+      .prepare('INSERT INTO agent_pairings VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')
+      .bind(
+        pairing.id,
+        pairing.agentId,
+        pairing.conflictId,
+        pairing.codeHash,
+        pairing.expiresAt,
+        pairing.claimedAt,
+        pairing.revokedAt,
+        pairing.clientName,
+        null,
+        null,
+        null,
+        pairing.createdAt,
+      )
+      .run();
+    return pairing;
+  }
+  async getAgentPairing(id: string) {
+    const row = await this.db.prepare('SELECT * FROM agent_pairings WHERE id=?').bind(id).first();
+    return row ? pairingFrom(row) : null;
+  }
+  async revokeOpenAgentPairings(agentId: string) {
+    await this.db
+      .prepare(
+        'UPDATE agent_pairings SET revoked_at=? WHERE agent_id=? AND claimed_at IS NULL AND revoked_at IS NULL',
+      )
+      .bind(new Date().toISOString(), agentId)
+      .run();
+  }
+  async claimAgentPairing(codeHash: string, clientName: string, token: AgentToken) {
+    const claimedAt = new Date().toISOString();
+    const results = await this.db.batch([
+      this.db
+        .prepare(
+          'UPDATE conflict_parties SET agent_id=(SELECT agent_id FROM agent_pairings WHERE code_hash=?),ready=0 WHERE conflict_id=(SELECT conflict_id FROM agent_pairings WHERE code_hash=?) AND user_id=(SELECT owner_user_id FROM agents WHERE id=(SELECT agent_id FROM agent_pairings WHERE code_hash=?)) AND (agent_id IS NULL OR agent_id=(SELECT agent_id FROM agent_pairings WHERE code_hash=?))',
+        )
+        .bind(codeHash, codeHash, codeHash, codeHash),
+      this.db
+        .prepare(
+          "UPDATE agent_pairings SET claimed_at=?,client_name=?,credential_id=?,credential_hash=?,credential_prefix=? WHERE code_hash=? AND claimed_at IS NULL AND revoked_at IS NULL AND expires_at>? AND agent_id IN (SELECT id FROM agents WHERE status='active') AND EXISTS (SELECT 1 FROM conflict_parties p JOIN agents a ON a.id=agent_pairings.agent_id WHERE p.conflict_id=agent_pairings.conflict_id AND p.user_id=a.owner_user_id AND p.agent_id=agent_pairings.agent_id)",
+        )
+        .bind(
+          claimedAt,
+          clientName,
+          token.id,
+          token.tokenHash,
+          token.tokenPrefix,
+          codeHash,
+          claimedAt,
+        ),
+      this.db
+        .prepare(
+          'UPDATE agent_tokens SET revoked_at=? WHERE agent_id=(SELECT agent_id FROM agent_pairings WHERE code_hash=? AND credential_id=?) AND revoked_at IS NULL',
+        )
+        .bind(claimedAt, codeHash, token.id),
+      this.db
+        .prepare(
+          'INSERT INTO agent_tokens (id,agent_id,token_hash,token_prefix,created_at,last_used_at,revoked_at) SELECT credential_id,agent_id,credential_hash,credential_prefix,?,NULL,NULL FROM agent_pairings WHERE code_hash=? AND credential_id=?',
+        )
+        .bind(token.createdAt, codeHash, token.id),
+      this.db
+        .prepare(
+          'UPDATE agent_pairings SET credential_hash=NULL,credential_prefix=NULL WHERE code_hash=? AND credential_id=?',
+        )
+        .bind(codeHash, token.id),
+    ]);
+    if (results[1].meta.changes !== 1 || results[3].meta.changes !== 1) return null;
+    const row = await this.db
+      .prepare('SELECT * FROM agent_pairings WHERE code_hash=?')
+      .bind(codeHash)
+      .first();
+    return row ? pairingFrom(row) : null;
   }
   async createInvitation(i: Invitation) {
     await this.db
