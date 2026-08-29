@@ -283,7 +283,13 @@ export function ConflictRoomPage() {
           </section>
           <aside className="context-rail">
             <TurnCard conflict={c} />
-            <AgentCard id={id!} party={yours} agents={data.agents} load={load} />
+            <AgentCard
+              id={id!}
+              conflictStatus={c.status}
+              party={yours}
+              agents={data.agents}
+              load={load}
+            />
             <section className="rail-section">
               <div className="rail-label">
                 PRIVATE BRIEF <span>{data.brief ? 'SAVED' : 'NOT STARTED'}</span>
@@ -474,16 +480,19 @@ function TurnCard({ conflict: c }: { conflict: any }) {
 }
 function AgentCard({
   id,
+  conflictStatus,
   party,
   agents,
   load,
 }: {
   id: string;
+  conflictStatus: string;
   party: any;
   agents: any[];
   load: () => Promise<void>;
 }) {
   const [busy, setBusy] = useState(false);
+  const [removeOpen, setRemoveOpen] = useState(false);
   const [pairing, setPairing] = useState<any>(null);
   const [pairingError, setPairingError] = useState('');
   const [copied, setCopied] = useState(false);
@@ -536,6 +545,14 @@ function AgentCard({
     await load();
     setBusy(false);
   };
+  const removeAgent = async () => {
+    if (!party.agent_id) throw new Error('This conflict has no agent to remove.');
+    await api(`/agents/${party.agent_id}`, { method: 'DELETE' });
+    setPairing(null);
+    setPairingError('');
+    await load();
+  };
+  const canRemove = !['active', 'paused', 'judging'].includes(conflictStatus);
   return (
     <section className="rail-section">
       <div className="rail-label">
@@ -639,6 +656,15 @@ function AgentCard({
               Developer options →
             </Link>
           </>
+        )}
+        {party.agent_bound && canRemove && (
+          <button
+            className="agent-developer-link agent-remove-link"
+            disabled={busy}
+            onClick={() => setRemoveOpen(true)}
+          >
+            <Unplug /> Remove agent
+          </button>
         )}
       </div>
       <Dialog
@@ -775,6 +801,16 @@ function AgentCard({
           </div>
         )}
       </Dialog>
+      <ConfirmDialog
+        open={removeOpen}
+        title="Remove this agent?"
+        description="ResolveRoom will disconnect its Runner, revoke its credentials and pending pairing codes, and unbind it from this conflict. You can create and pair a fresh agent immediately. This cannot be undone."
+        confirmLabel="Remove agent"
+        cancelLabel="Keep agent"
+        danger
+        onConfirm={removeAgent}
+        onClose={() => setRemoveOpen(false)}
+      />
     </section>
   );
 }

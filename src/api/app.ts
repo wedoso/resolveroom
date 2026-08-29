@@ -75,13 +75,11 @@ const disconnectedRunnerStatus = (): RunnerStatus => ({
   reconnect_reason: 'runner_not_connected',
 });
 const limiter = new Map<string, { count: number; reset: number }>();
-const bootstrapEval = 'await eval(Buffer.from(process.argv[1],"base64").toString("utf8"))';
 const shellArgument = (value: string) => JSON.stringify(value);
 const bootstrapArguments = (origin: string, command: string[]) => [
   '--input-type=module',
   '--eval',
-  bootstrapEval,
-  agentAssets.loaderBase64,
+  agentAssets.loaderSource,
   `${origin}/agent/bootstrap.mjs`,
   agentAssets.bootstrapSha256,
   agentAssets.bundleSha256,
@@ -91,10 +89,17 @@ const bootstrapCommand = (origin: string, command: string[]) =>
   `<NODE_EXECUTABLE> ${bootstrapArguments(origin, command).map(shellArgument).join(' ')}`;
 const codexNetworkExecution = (origin: string) => ({
   tool: 'exec_command',
-  sandbox_permissions: 'require_escalated',
   network_access: 'required',
   allowed_origin: origin,
-  justification: `Allow the bundled Node executable to connect only to ${origin} so it can install or reconnect the ResolveRoom Runner.`,
+  approval_strategy: 'use_existing_network_or_request_when_supported',
+  when_network_is_available:
+    'Invoke the exact bundled Node executable directly. Do not request escalation when the current environment already has network access.',
+  when_approval_is_supported: {
+    sandbox_permissions: 'require_escalated',
+    justification: `Allow the bundled Node executable to connect only to ${origin} so it can install or reconnect the ResolveRoom Runner.`,
+  },
+  when_approval_policy_is_never:
+    'Do not request unavailable escalation. If this environment already has network access, invoke the exact bundled Node executable normally. If it does not, stop without invoking it; the pairing code remains unconsumed.',
 });
 
 const jsonBody = async (c: Context) => {
@@ -293,7 +298,7 @@ export function createApi(db: Database, options: Options = {}) {
           node_field: 'node executable',
           execution: codexNetworkExecution(allowedOrigin),
           environment:
-            'Use the returned bundled node executable directly through exec_command with sandbox_permissions=require_escalated. Approve network access for the ResolveRoom origin before invoking it; a restricted command sandbox can return ENOTFOUND even when the site opens in a browser. Do not use system Node.js, npm, npx, pnpm, GitHub, or a package registry. The bootstrap creates its own private temporary directory and verifies both downloads by SHA-256.',
+            'Use the returned bundled node executable directly through exec_command. If the current environment already has network access, run it normally—even when its approval policy is Never. If network is restricted and approval is supported, request sandbox_permissions=require_escalated for the ResolveRoom origin before invoking it. Do not use system Node.js, npm, npx, pnpm, GitHub, or a package registry. The bootstrap creates its own private temporary directory and verifies both downloads by SHA-256.',
           connect_arguments: bootstrapArguments(allowedOrigin, [
             'connect',
             '<PAIRING_CODE>',
@@ -806,15 +811,15 @@ export function createApi(db: Database, options: Options = {}) {
       '--origin',
       allowedOrigin,
     ]);
-    const runtimePreparation = `call Codex's \`load_workspace_dependencies\` tool and select its returned \`node executable\`. Before invoking it, call \`exec_command\` with \`sandbox_permissions: "require_escalated"\` and the justification “Allow the bundled Node executable to connect only to ${allowedOrigin} so it can install or reconnect the ResolveRoom Runner.” Wait for network approval; do not first run the command in the restricted sandbox, because that sandbox can return \`ENOTFOUND\` even when the site opens in a browser`;
+    const runtimePreparation = `call Codex's \`load_workspace_dependencies\` tool and select its returned \`node executable\`. Check the current execution environment before invoking it. If that environment already has network access, invoke the exact bundled Node normally—even when its approval policy is \`Never\`; do not request unavailable escalation. If network is restricted and approval is supported, first call \`exec_command\` with \`sandbox_permissions: "require_escalated"\` and the justification “Allow the bundled Node executable to connect only to ${allowedOrigin} so it can install or reconnect the ResolveRoom Runner.” If network is restricted and the approval policy is \`Never\`, stop without invoking the command and report that this task needs a network-enabled local environment; the pairing code will remain unconsumed`;
     return c.json(
       {
         pairing: pairingView(pairing),
         code,
-        instruction: `Connect this computer's Codex to ResolveRoom for “${conflict.title}”. Before running anything, ${runtimePreparation}. After network access is approved, invoke that exact Node executable directly and exactly once with this JSON argument array: \`${JSON.stringify(codexArguments)}\`. Do not use the system Node.js, npm, npx, pnpm, GitHub, or any package registry. Do not wrap, redirect, capture, or parse the command's output. The same-origin bootstrap verifies the downloaded bootstrap and self-contained Runner bundle by SHA-256, validates the local Codex executable before consuming the pairing code, replaces any stale copied runtime, stores a protected recovery copy of the credential, and enables automatic later turns. Protect the private brief and never print or reveal the stored credential. If a mistaken restricted-sandbox attempt returns \`error: "network_access_required"\` with \`pairing_consumed: false\`, retry the same JSON arguments exactly once using the required escalated network permission. If the result has \`pairing_consumed: true\` but the Runner is not online, keep the returned credential private and recover without a new pairing code by invoking the same bundled Node executable once with: \`${JSON.stringify(codexReconnectArguments)}\`.`,
+        instruction: `Connect this computer's Codex to ResolveRoom for “${conflict.title}”. Before running anything, ${runtimePreparation}. Once network access is available, invoke that exact Node executable directly and exactly once with this JSON argument array: \`${JSON.stringify(codexArguments)}\`. Do not use the system Node.js, npm, npx, pnpm, GitHub, or any package registry. Do not wrap, redirect, capture, or parse the command's output. The argument array contains direct JavaScript source and does not require Base64 decoding or a second eval. The same-origin bootstrap verifies the downloaded bootstrap and self-contained Runner bundle by SHA-256, validates the local Codex executable before consuming the pairing code, replaces any stale copied runtime, stores a protected recovery copy of the credential, and enables automatic later turns. Protect the private brief and never print or reveal the stored credential. If a restricted attempt returns \`error: "network_access_required"\` with \`pairing_consumed: false\`, retry the same JSON arguments exactly once after network access becomes available. If the result has \`pairing_consumed: true\` but the Runner is not online, keep the returned credential private and recover without a new pairing code by invoking the same bundled Node executable once with: \`${JSON.stringify(codexReconnectArguments)}\`.`,
         command,
         reconnect_command: reconnectCommand,
-        recovery_instruction: `Finish the ResolveRoom Runner setup without generating a new pairing code. First ${runtimePreparation}. After network access is approved, invoke that exact Node executable directly once with this JSON argument array: \`${JSON.stringify(codexReconnectArguments)}\`. This same-origin flow does not use npm, pnpm, GitHub, or a package registry. Do not wrap or redirect the command; its structured output is credential-redacted. If a mistaken restricted-sandbox attempt returns \`error: "network_access_required"\`, retry the same JSON arguments exactly once with the required escalated network permission. Never print or reveal the stored credential or private brief.`,
+        recovery_instruction: `Finish the ResolveRoom Runner setup without generating a new pairing code. First ${runtimePreparation}. Once network access is available, invoke that exact Node executable directly once with this JSON argument array: \`${JSON.stringify(codexReconnectArguments)}\`. This same-origin flow does not use npm, pnpm, GitHub, or a package registry. Do not wrap or redirect the command; its structured output is credential-redacted. If a restricted attempt returns \`error: "network_access_required"\`, retry the same JSON arguments exactly once after network access becomes available. Never print or reveal the stored credential or private brief.`,
         codex_runtime: {
           tool: 'load_workspace_dependencies',
           node_field: 'node executable',

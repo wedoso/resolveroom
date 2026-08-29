@@ -349,6 +349,69 @@ test('an idle agent can be deleted through the guarded developer flow', async ({
   await expect(page.getByRole('heading', { name: agent.agent.name })).toHaveCount(0);
 });
 
+test('a participant can remove a broken agent and immediately create a fresh pairing', async ({
+  page,
+}) => {
+  const suffix = unique();
+  await body(
+    await page.request.post('/api/v1/auth/development', {
+      data: { email: `replace.ui.${suffix}@example.test`, display_name: 'Replace UI' },
+    }),
+  );
+  const created = await body(
+    await page.request.post('/api/v1/conflicts', {
+      data: {
+        title: `Replace a broken Runner ${suffix}`,
+        description: 'Verify safe removal and fresh pairing from the conflict room.',
+        protocol_type: 'debate',
+        max_rounds: 3,
+      },
+    }),
+  );
+
+  await page.goto(`/conflicts/${created.conflict.id}`);
+  await page.getByRole('button', { name: 'Connect Runner' }).click();
+  const firstCode = (await page.locator('.pairing-code strong').textContent())?.trim();
+  expect(firstCode).toMatch(/^[A-HJ-NP-Z2-9]{4}(?:-[A-HJ-NP-Z2-9]{4}){2}$/);
+  const firstState = await body(await page.request.get(`/api/v1/conflicts/${created.conflict.id}`));
+  const firstParty = firstState.parties.find((party: any) => party.role === firstState.your_party);
+  expect(firstParty.agent_id).toBeTruthy();
+
+  await page.getByRole('button', { name: 'Close dialog' }).click();
+  await page.getByRole('button', { name: 'Remove agent' }).click();
+  const confirmation = page.getByRole('dialog');
+  await expect(confirmation.getByRole('heading', { name: 'Remove this agent?' })).toBeVisible();
+  await expect(
+    confirmation.getByText(/revoke its credentials and pending pairing codes/),
+  ).toBeVisible();
+  await confirmation.getByRole('button', { name: 'Remove agent' }).click();
+
+  await expect(page.getByRole('button', { name: 'Connect Runner' })).toBeVisible();
+  await expect
+    .poll(async () => {
+      const state = await body(await page.request.get(`/api/v1/conflicts/${created.conflict.id}`));
+      return state.parties.find((party: any) => party.role === state.your_party)?.agent_bound;
+    })
+    .toBe(false);
+  const removedState = await body(
+    await page.request.get(`/api/v1/conflicts/${created.conflict.id}`),
+  );
+  const removedParty = removedState.parties.find(
+    (party: any) => party.role === removedState.your_party,
+  );
+  expect(removedParty).toMatchObject({ agent_bound: false, ready: false });
+  expect(removedParty.agent_id).toBeUndefined();
+
+  await page.getByRole('button', { name: 'Connect Runner' }).click();
+  const freshCode = (await page.locator('.pairing-code strong').textContent())?.trim();
+  expect(freshCode).toMatch(/^[A-HJ-NP-Z2-9]{4}(?:-[A-HJ-NP-Z2-9]{4}){2}$/);
+  expect(freshCode).not.toBe(firstCode);
+  const freshState = await body(await page.request.get(`/api/v1/conflicts/${created.conflict.id}`));
+  const freshParty = freshState.parties.find((party: any) => party.role === freshState.your_party);
+  expect(freshParty.agent_id).toBeTruthy();
+  expect(freshParty.agent_id).not.toBe(firstParty.agent_id);
+});
+
 test('complete debate persists and renders a polished verdict', async ({ page, request }) => {
   const flow = await completeConflict(request, `debate-${unique()}`);
   await page.request.post('/api/v1/auth/development', {

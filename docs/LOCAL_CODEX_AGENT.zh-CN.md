@@ -9,7 +9,9 @@
 3. 点击 **Copy instruction for Codex**；
 4. 把整句指令粘贴到本地 Codex task 中。
 
-指令会让 Codex 调用 `load_workspace_dependencies`，然后只使用它返回的 `node executable`。在真正运行前，Codex 必须用 `sandbox_permissions: "require_escalated"` 请求一次只访问 ResolveRoom origin 的网络权限；用户需要在 Codex 中批准该请求。这个步骤很重要：Codex 的受限命令沙箱可能返回 `ENOTFOUND`，即使同一个网页可以在浏览器正常打开。权限批准后，bundled Node 会从 ResolveRoom 自己的 HTTPS origin 下载 bootstrap 和自包含 Runner bundle，逐一校验 SHA-256，并从私有临时目录执行。整个流程不会访问 GitHub 或 npm registry，也不会调用 npm、npx、pnpm、curl 或系统 Node.js。如果 Codex 误在受限沙箱中运行，bootstrap 会返回 `network_access_required` 和 `pairing_consumed: false`；批准网络权限后可以安全地用完全相同的参数重试。网页提供的是可机器读取的 Node JSON 参数数组；安装器会在消费一次性配对码之前验证本机 ChatGPT/Codex executable 可以启动。
+指令会让 Codex 调用 `load_workspace_dependencies`，然后只使用它返回的 `node executable`。Codex 会先检查当前执行环境：如果已经有网络权限，就直接正常运行；即使 approval policy 是 `Never`，也不应请求一个不可用的升级权限。如果网络受限且环境支持审批，才使用 `sandbox_permissions: "require_escalated"` 请求一次只访问 ResolveRoom origin 的网络权限。Codex 的受限命令沙箱可能返回 `ENOTFOUND`，即使同一个网页可以在浏览器正常打开。bundled Node 会从 ResolveRoom 自己的 HTTPS origin 下载 bootstrap 和自包含 Runner bundle，逐一校验 SHA-256，并从私有临时目录执行。整个流程不会访问 GitHub 或 npm registry，也不会调用 npm、npx、pnpm、curl 或系统 Node.js。网页提供的 Node JSON 参数数组直接包含 JavaScript source，不再经过 Base64 解码和第二次 eval。如果受限环境返回 `network_access_required` 和 `pairing_consumed: false`，可以在网络权限可用后用完全相同的参数安全重试；安装器会在消费一次性配对码之前验证本机 ChatGPT/Codex executable 可以启动。
+
+如果需要重新配对，在 conflict 页面点击 **Remove agent**。在冲突进入 active 之前，这个操作会一次性断开 Runner、撤销旧凭证和未使用的 pairing code，并解除该 participant 的 agent 绑定。完成后点击 **Connect Runner** 即可创建全新的 agent 和一次性指令。active、paused 或 judging 状态下不会允许删除，以保护正在进行的记录。
 
 Codex 运行后会把 `rr_agent_…` credential 直接存入 macOS Keychain，不会在终端输出它。Windows 和 Linux 使用权限为 `0600` 的用户配置文件。安装器会把正在工作的 bundled Node runtime 复制进 ResolveRoom 的私有 Runner 目录，再安装后台服务并主动连接 ResolveRoom；之后即使系统 Node.js 损坏或升级，Runner 也不受影响。网页会自动显示 **Runner online**。
 

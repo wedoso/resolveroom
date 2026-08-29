@@ -63,7 +63,8 @@ describe('single-use Codex pairing', () => {
     expect(created.body.instruction).toContain('node executable');
     expect(created.body.instruction).toContain('JSON argument array');
     expect(created.body.instruction).toContain('sandbox_permissions: "require_escalated"');
-    expect(created.body.instruction).toContain('ENOTFOUND');
+    expect(created.body.instruction).toContain('approval policy is `Never`');
+    expect(created.body.instruction).toContain('direct JavaScript source');
     expect(created.body.instruction).toContain('network_access_required');
     expect(created.body.instruction).toContain('/agent/bootstrap.mjs');
     expect(created.body.instruction).toContain('SHA-256');
@@ -77,9 +78,12 @@ describe('single-use Codex pairing', () => {
     expect(created.body.codex_runtime.tool).toBe('load_workspace_dependencies');
     expect(created.body.codex_runtime.execution).toMatchObject({
       tool: 'exec_command',
-      sandbox_permissions: 'require_escalated',
       network_access: 'required',
       allowed_origin: 'http://resolveroom.test',
+      approval_strategy: 'use_existing_network_or_request_when_supported',
+      when_approval_is_supported: {
+        sandbox_permissions: 'require_escalated',
+      },
     });
     expect(created.body.codex_runtime.arguments).toContain('connect');
     expect(created.body.codex_runtime.arguments).toContain(created.body.code);
@@ -254,7 +258,7 @@ describe('single-use Codex pairing', () => {
     expect(manifest.pairing).toMatchObject({ single_use: true, code_ttl_seconds: 600 });
     expect(manifest.cli).toMatchObject({
       distribution: 'resolveroom-origin',
-      version: '0.1.4',
+      version: '0.1.5',
       bootstrap_url: 'http://resolveroom.test/agent/bootstrap.mjs',
       bundle_url: 'http://resolveroom.test/agent/resolveroom.mjs',
     });
@@ -267,15 +271,21 @@ describe('single-use Codex pairing', () => {
       environment: expect.stringContaining('package registry'),
       execution: {
         tool: 'exec_command',
-        sandbox_permissions: 'require_escalated',
         network_access: 'required',
         allowed_origin: 'http://resolveroom.test',
-        justification: expect.stringContaining('resolveroom.test'),
+        approval_strategy: 'use_existing_network_or_request_when_supported',
+        when_approval_is_supported: {
+          sandbox_permissions: 'require_escalated',
+          justification: expect.stringContaining('resolveroom.test'),
+        },
       },
     });
     expect(manifest.cli.codex_app.connect_arguments).toContain('connect');
     expect(manifest.cli.codex_app.reconnect_arguments).toContain('runner');
     expect(manifest.cli.codex_app.reconnect_arguments).toContain('reconnect');
+    expect(JSON.stringify(manifest.cli.codex_app.connect_arguments)).not.toContain(
+      'Buffer.from(process.argv[1]',
+    );
     expect(JSON.stringify(manifest)).not.toContain('github.com');
     expect(JSON.stringify(manifest)).not.toContain('registry.npmjs.org');
     expect(JSON.stringify(manifest)).not.toContain('rr_agent_');

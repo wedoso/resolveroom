@@ -1918,6 +1918,16 @@ legend {
   border: 0;
   background: transparent;
 }
+.agent-remove-link {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--danger);
+}
+.agent-remove-link svg {
+  width: 12px;
+  height: 12px;
+}
 .pairing-flow {
   display: flex;
   flex-direction: column;
