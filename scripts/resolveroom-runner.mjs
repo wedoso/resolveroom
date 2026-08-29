@@ -547,6 +547,96 @@ function cmdQuote(value) {
   return `"${value.replaceAll('%', '%%').replaceAll('"', '""')}"`;
 }
 
+function safeRunnerRoot(root) {
+  const target = resolve(root);
+  const home = resolve(homedir());
+  const filesystemRoot = resolve(target, '..') === target;
+  if (target === home || filesystemRoot || target.length < 8) {
+    const error = new Error('Refusing to remove an unsafe Runner directory.');
+    error.code = 'RUNNER_CLEANUP_UNSAFE_PATH';
+    throw error;
+  }
+  return target;
+}
+
+function stopDetachedRunner(root) {
+  const pidPath = join(root, 'service.pid');
+  if (!existsSync(pidPath)) return false;
+  try {
+    const pid = Number(readFileSync(pidPath, 'utf8').trim());
+    if (Number.isSafeInteger(pid) && pid > 1 && pid !== process.pid) process.kill(pid, 'SIGTERM');
+  } catch {
+    // A missing or already-stopped detached Runner is already clean.
+  }
+  return true;
+}
+
+export function uninstallRunner({ baseUrl, root = runnerRoot() }) {
+  const target = safeRunnerRoot(root);
+  const existed = existsSync(target);
+  const id = serviceId(baseUrl);
+  let serviceRemoved = false;
+
+  if (process.env.RESOLVEROOM_RUNNER_SERVICE_MODE === 'detached') {
+    serviceRemoved = stopDetachedRunner(target);
+  } else if (process.platform === 'darwin') {
+    const label = `dev.resolveroom.agent-runner.${id}`;
+    const plistPath = join(homedir(), 'Library', 'LaunchAgents', `${label}.plist`);
+    try {
+      execFileSync('launchctl', ['bootout', `gui/${process.getuid()}/${label}`], {
+        stdio: 'ignore',
+      });
+      serviceRemoved = true;
+    } catch {
+      // launchctl returns non-zero when the service is already absent.
+    }
+    if (existsSync(plistPath)) {
+      rmSync(plistPath, { force: true });
+      serviceRemoved = true;
+    }
+  } else if (process.platform === 'linux') {
+    const unit = `resolveroom-runner-${id}.service`;
+    const unitPath = join(homedir(), '.config', 'systemd', 'user', unit);
+    try {
+      execFileSync('systemctl', ['--user', 'disable', '--now', unit], { stdio: 'ignore' });
+      serviceRemoved = true;
+    } catch {
+      // systemd returns non-zero when the unit is already absent.
+    }
+    if (existsSync(unitPath)) {
+      rmSync(unitPath, { force: true });
+      serviceRemoved = true;
+    }
+    try {
+      execFileSync('systemctl', ['--user', 'daemon-reload'], { stdio: 'ignore' });
+    } catch {
+      // No user systemd session means there is no managed service to reload.
+    }
+  } else if (process.platform === 'win32') {
+    const task = `ResolveRoom Agent Runner ${id}`;
+    try {
+      execFileSync('schtasks.exe', ['/End', '/TN', task], { stdio: 'ignore' });
+    } catch {
+      // The task may already be stopped.
+    }
+    try {
+      execFileSync('schtasks.exe', ['/Delete', '/F', '/TN', task], { stdio: 'ignore' });
+      serviceRemoved = true;
+    } catch {
+      // The task may already be absent.
+    }
+  } else {
+    serviceRemoved = stopDetachedRunner(target);
+  }
+
+  rmSync(target, { recursive: true, force: true });
+  return {
+    service_removed: serviceRemoved,
+    runtime_removed: existed,
+    already_clean: !existed && !serviceRemoved,
+  };
+}
+
 export async function waitUntilOnline(request, timeoutMs = 20_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -571,6 +661,7 @@ export async function runRunnerCommand({
     return null;
   }
   if (subcommand === 'status') return request('/agent/runner');
+  if (subcommand === 'uninstall') return uninstallRunner({ baseUrl });
   if (subcommand === 'install' || subcommand === 'reconnect') {
     const installed = installRunner({
       baseUrl,

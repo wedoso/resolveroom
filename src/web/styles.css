@@ -1031,6 +1031,91 @@ legend {
   justify-content: flex-end;
   gap: 10px;
 }
+.agent-cleanup-flow {
+  display: grid;
+  gap: 14px;
+}
+.cleanup-step {
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  padding: 18px;
+  background: var(--white);
+}
+.cleanup-step.recommended {
+  border-left: 4px solid var(--forest);
+  background: rgba(207, 225, 212, 0.14);
+}
+.cleanup-step.destructive {
+  border-left: 4px solid var(--danger);
+}
+.cleanup-step header {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+.cleanup-step header > span {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  color: var(--white);
+  background: var(--forest);
+  font-family: 'JetBrains Mono';
+  font-size: 11px;
+}
+.cleanup-step.destructive header > span {
+  background: var(--danger);
+}
+.cleanup-step header div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.cleanup-step header small {
+  color: var(--ink-3);
+}
+.cleanup-step > p {
+  margin: 14px 0;
+  color: var(--ink-2);
+  font-size: 13px;
+  line-height: 1.55;
+}
+.cleanup-scope,
+.cleanup-privacy {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  color: var(--ink-3);
+  font-size: 11px;
+  line-height: 1.45;
+}
+.cleanup-scope {
+  margin-top: 12px;
+}
+.cleanup-scope svg,
+.cleanup-privacy svg {
+  width: 15px;
+  flex: 0 0 auto;
+}
+.cleanup-acknowledgement {
+  display: grid;
+  grid-template-columns: 20px 1fr;
+  gap: 10px;
+  align-items: start;
+  font-size: 12px;
+  line-height: 1.5;
+  cursor: pointer;
+}
+.cleanup-acknowledgement input {
+  min-height: 18px;
+  width: 18px;
+  margin: 1px 0 0;
+}
+.cleanup-privacy {
+  margin: -3px 0 0;
+  justify-content: center;
+}
 .dialog-form {
   display: flex;
   flex-direction: column;
@@ -1585,6 +1670,13 @@ legend {
   grid-template-columns: repeat(4, 1fr);
   max-width: 850px;
   margin-bottom: 33px;
+}
+.protocol-explainer {
+  margin: -6px 0 22px;
+  text-align: center;
+  color: var(--ink-3);
+  font-size: 11px;
+  line-height: 1.5;
 }
 .protocol-progress > div {
   display: flex;

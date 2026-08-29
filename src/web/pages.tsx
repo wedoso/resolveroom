@@ -21,10 +21,10 @@ import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { Link, Navigate, useNavigate, useParams } from 'react-router-dom';
 import { api, relativeTime } from './api';
 import { copyText } from './clipboard';
+import { AgentRemovalDialog } from './agent-removal';
 import {
   AppShell,
   Brand,
-  ConfirmDialog,
   Dialog,
   PageLoading,
   SignInForm,
@@ -700,12 +700,6 @@ export function AgentsPage() {
     setCreateOpen(false);
     await load();
   };
-  const remove = async () => {
-    if (!deleteTarget) return;
-    await api(`/agents/${deleteTarget.id}`, { method: 'DELETE' });
-    setDeleteTarget(null);
-    await load();
-  };
   if (!agents && !error)
     return (
       <AppShell>
@@ -858,15 +852,11 @@ export function AgentsPage() {
             </div>
           )}
         </Dialog>
-        <ConfirmDialog
+        <AgentRemovalDialog
           open={Boolean(deleteTarget)}
-          title={`Delete ${deleteTarget?.name ?? 'agent'}?`}
-          description="All API credentials and pending pairing codes will be revoked immediately, and the agent will be removed from pending conflicts. This action cannot be undone."
-          confirmLabel="Delete agent"
-          cancelLabel="Keep agent"
-          danger
+          agent={deleteTarget}
           onClose={() => setDeleteTarget(null)}
-          onConfirm={remove}
+          onRemoved={load}
         />
       </main>
     </AppShell>

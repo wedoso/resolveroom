@@ -195,4 +195,24 @@ describe('Judge deployment capability', () => {
     expect(((await response.json()) as any).error.code).toBe('JUDGE_UNAVAILABLE');
     expect(await db.getVerdict(input.conflictId)).toBeNull();
   });
+
+  it('lets participants finalize legacy judging records without a verdict', async () => {
+    const db = await judgingDb();
+    const app = createApi(db, {
+      allowDevelopmentAuth: true,
+      appUrl: 'http://judge.test',
+      judgeEnabled: false,
+    });
+    const userId = [...db.users.values()][0].id;
+    const response = await app.request(
+      `http://judge.test/api/v1/conflicts/${input.conflictId}/complete`,
+      { method: 'POST', headers: { 'x-dev-user-id': userId } },
+    );
+    expect(response.status).toBe(200);
+    expect((await response.json()) as any).toMatchObject({
+      conflict: { status: 'resolved' },
+    });
+    expect(await db.getVerdict(input.conflictId)).toBeNull();
+    expect((await db.listEvents(input.conflictId)).at(-1)?.eventType).toBe('conflict_resolved');
+  });
 });

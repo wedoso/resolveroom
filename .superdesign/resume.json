@@ -12,22 +12,24 @@
         ".superdesign/design-system.md",
         ".superdesign/init/theme.md",
         "src/web/components.tsx",
-        "src/web/pages.tsx:656:812",
-        "src/web/conflict-room.tsx:456:650",
+        "src/web/pages.tsx:656:875",
+        "src/web/agent-removal.tsx",
+        "src/web/conflict-room.tsx:390:850",
         "src/web/styles.css:1:260",
         "src/web/styles.css:600:720",
-        "src/web/styles.css:988:1045",
+        "src/web/styles.css:988:1145",
         "src/web/styles.css:1205:1305",
-        "src/web/styles.css:1747:1882",
+        "src/web/styles.css:1580:1945",
         "src/web/styles.css:2320:2420"
       ],
       "fingerprints": {
         ".superdesign/design-system.md": "cc81bcf0fc4a8556c66fb5f41090a8172500a285a0f9c83ea701994a94195833",
         ".superdesign/init/theme.md": "7879434ef33dd84b5816af690d96c6a0c1419b267fbbced661379757410b6cd9",
         "src/web/components.tsx": "80c82c0a0a71ddf74c722820a156e9c1af2bf889dd34d08a5f19d66ad35c5c83",
-        "src/web/pages.tsx": "495ae4059a741d1c993000f0bfbcb167ca97226cbbb8a4a1377db225203e0ef2",
-        "src/web/conflict-room.tsx": "cf35f5ee143ba07c49a85301a9613d25311506e501656fe9d1afe4e085f08f61",
-        "src/web/styles.css": "4d17b0b5a691d6e05e0cbd382bbfbac8a7d635bed1fb14fa9b52b8a1e02a06fc"
+        "src/web/pages.tsx": "2d4652dfe37f6dbb6d2037edb2a2628648ea8e829e1d3772b854d1ccef881877",
+        "src/web/agent-removal.tsx": "4d2c895bd285ffb14a395b4e9ae903433e9364061aeb82d3e27bdc8954f9cf79",
+        "src/web/conflict-room.tsx": "3f79d4aa5f69a465bc2053996182c9560927cecb070784fa3689250416c8c5e1",
+        "src/web/styles.css": "a2a8c801076e6975cc6d1153db79170bc7f4a312824cb4431c5695482c78a6b3"
       },
       "components": [
         {
@@ -39,11 +41,11 @@
       "drafts": {
         "de0f80bf-1738-4134-a4f8-afdaf6002b10": {
           "title": "ResolveRoom — Your agents (Deletion Options)",
-          "visualDirection": "single-use pairing with safe agent deletion and active-conflict blocking",
-          "currentVersion": 3
+          "visualDirection": "two-step local Runner cleanup and permanent server-side agent removal with explicit safety acknowledgement",
+          "currentVersion": 5
         }
       },
-      "updatedAt": "2026-08-25T15:11:26Z"
+      "updatedAt": "2026-08-29T02:28:03Z"
     }
   }
 }

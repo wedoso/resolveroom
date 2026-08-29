@@ -24,6 +24,7 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { api } from './api';
 import { copyText } from './clipboard';
+import { AgentRemovalDialog } from './agent-removal';
 import {
   AppShell,
   ConfirmDialog,
@@ -214,6 +215,12 @@ export function ConflictRoomPage() {
         </header>
         <ParticipantStrip parties={c.parties} />
         <ProtocolProgress phase={c.phase} status={c.status} judgeAvailable={c.judge_available} />
+        <p className="protocol-explainer">
+          3 phases · 2 turns each · 6 total statements. After both closing statements,{' '}
+          {c.judge_available
+            ? 'the advisory Judge evaluates the completed record.'
+            : 'the conflict closes as a completed record without a verdict.'}
+        </p>
         <div className="room-grid">
           <section className="record-column">
             <div className="room-tabs" role="tablist" aria-label="Conflict sections">
@@ -282,7 +289,7 @@ export function ConflictRoomPage() {
             )}
           </section>
           <aside className="context-rail">
-            <TurnCard conflict={c} />
+            <TurnCard conflict={c} id={id!} load={load} />
             <AgentCard
               id={id!}
               conflictStatus={c.status}
@@ -396,9 +403,10 @@ function ProtocolProgress({
   status: string;
   judgeAvailable: boolean;
 }) {
-  const items = ['opening', 'rebuttal', 'closing', ...(judgeAvailable ? ['verdict'] : [])];
-  const current = status === 'resolved' && judgeAvailable ? 'verdict' : (phase ?? 'opening');
-  const index = status === 'resolved' && !judgeAvailable ? items.length : items.indexOf(current);
+  const finalStep = judgeAvailable ? 'assessment' : 'complete';
+  const items = ['opening', 'rebuttal', 'closing', finalStep];
+  const current = status === 'judging' || status === 'resolved' ? finalStep : (phase ?? 'opening');
+  const index = status === 'resolved' ? items.length : Math.max(0, items.indexOf(current));
   return (
     <section className="protocol-progress" aria-label="Protocol progress">
       {items.map((item, i) => (
@@ -432,9 +440,31 @@ function ConnectionState({ state }: { state: string }) {
     </span>
   );
 }
-function TurnCard({ conflict: c }: { conflict: any }) {
+function TurnCard({
+  conflict: c,
+  id,
+  load,
+}: {
+  conflict: any;
+  id: string;
+  load: () => Promise<void>;
+}) {
   const turn = c.current_turn;
   const party = turn ? c.parties.find((p: any) => p.id === turn.party_id) : null;
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const complete = async () => {
+    setBusy(true);
+    setError('');
+    try {
+      await api(`/conflicts/${id}/complete`, { method: 'POST' });
+      await load();
+    } catch (value) {
+      setError(value instanceof Error ? value.message : 'Could not complete this conflict.');
+    } finally {
+      setBusy(false);
+    }
+  };
   return (
     <section className="rail-section">
       <div className="rail-label">CURRENT STATE</div>
@@ -447,7 +477,10 @@ function TurnCard({ conflict: c }: { conflict: any }) {
               </span>
               <span>
                 <strong>{party?.display_name}’s agent</strong>
-                <small>Owns the {c.phase} turn</small>
+                <small>
+                  Phase {Math.max(1, ['opening', 'rebuttal', 'closing'].indexOf(c.phase) + 1)} of 3
+                  · owns the {c.phase} turn
+                </small>
               </span>
               <i />
             </div>
@@ -462,16 +495,35 @@ function TurnCard({ conflict: c }: { conflict: any }) {
               {c.status === 'resolved'
                 ? c.judge_available
                   ? 'Assessment complete'
-                  : 'Exchange complete'
+                  : 'Conflict complete'
                 : c.status === 'judging'
                   ? c.judge_available
                     ? 'Judge is evaluating'
-                    : 'Exchange complete'
+                    : 'Ready to complete'
                   : c.status === 'briefing'
                     ? 'Waiting for both participants'
                     : c.status.replaceAll('_', ' ')}
             </strong>
-            <p>No agent action is currently accepted.</p>
+            <p>
+              {c.status === 'resolved'
+                ? c.judge_available
+                  ? 'The six-turn exchange and advisory assessment are finished.'
+                  : 'The six-turn exchange is closed. No verdict was generated.'
+                : c.status === 'judging' && !c.judge_available
+                  ? 'This is a conflict completed before record-only finalization was enabled. Close it now without a verdict.'
+                  : 'No agent action is currently accepted.'}
+            </p>
+            {c.status === 'judging' && !c.judge_available && (
+              <button className="button wide" disabled={busy} onClick={() => void complete()}>
+                {busy ? <LoaderCircle className="spin" /> : <Check />}
+                Complete conflict
+              </button>
+            )}
+            {error && (
+              <p className="form-error" role="alert">
+                {error}
+              </p>
+            )}
           </>
         )}
       </div>
@@ -544,13 +596,6 @@ function AgentCard({
     await api(`/conflicts/${id}/ready`, { method: 'POST', body: '{"ready":true}' });
     await load();
     setBusy(false);
-  };
-  const removeAgent = async () => {
-    if (!party.agent_id) throw new Error('This conflict has no agent to remove.');
-    await api(`/agents/${party.agent_id}`, { method: 'DELETE' });
-    setPairing(null);
-    setPairingError('');
-    await load();
   };
   const canRemove = !['active', 'paused', 'judging'].includes(conflictStatus);
   return (
@@ -801,15 +846,22 @@ function AgentCard({
           </div>
         )}
       </Dialog>
-      <ConfirmDialog
+      <AgentRemovalDialog
         open={removeOpen}
-        title="Remove this agent?"
-        description="ResolveRoom will disconnect its Runner, revoke its credentials and pending pairing codes, and unbind it from this conflict. You can create and pair a fresh agent immediately. This cannot be undone."
-        confirmLabel="Remove agent"
-        cancelLabel="Keep agent"
-        danger
-        onConfirm={removeAgent}
+        agent={
+          party.agent_id
+            ? {
+                id: party.agent_id,
+                name: agents.find((agent) => agent.id === party.agent_id)?.name ?? 'this agent',
+              }
+            : null
+        }
         onClose={() => setRemoveOpen(false)}
+        onRemoved={async () => {
+          setPairing(null);
+          setPairingError('');
+          await load();
+        }}
       />
     </section>
   );

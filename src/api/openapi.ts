@@ -452,6 +452,16 @@ export const openapiDocument = {
         responses: { '201': { description: 'Credential created' } },
       },
     },
+    '/agents/{id}/local-cleanup': {
+      get: {
+        tags: ['Agents'],
+        summary: 'Create a credential-free local Runner cleanup instruction',
+        description:
+          'Returns a same-origin instruction that stops the local service and removes its runtime, logs, and credential. The browser cannot perform local cleanup itself. The server-side Agent must be deleted separately.',
+        security: humanSession,
+        responses: ok,
+      },
+    },
     '/agents/{id}/tokens/rotate': {
       post: {
         tags: ['Agents'],
@@ -477,6 +487,15 @@ export const openapiDocument = {
         parameters: conflictId,
         security: humanSession,
         responses: { '201': { description: 'Pairing instruction created' } },
+      },
+    },
+    '/conflicts/{id}/complete': {
+      post: {
+        tags: ['Conflicts'],
+        summary: 'Complete a legacy judging conflict when Judge is disabled',
+        parameters: conflictId,
+        security: humanSession,
+        responses: ok,
       },
     },
     '/agent-pairings/exchange': {

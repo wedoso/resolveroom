@@ -3755,6 +3755,7 @@ __export(resolveroom_runner_exports, {
   resolveCodexExecutable: () => resolveCodexExecutable,
   runRunnerCommand: () => runRunnerCommand,
   startRunner: () => startRunner,
+  uninstallRunner: () => uninstallRunner,
   waitUntilOnline: () => waitUntilOnline
 });
 import { execFileSync, spawn, spawnSync } from "node:child_process";
@@ -4262,6 +4263,85 @@ function cmdQuote(value) {
   if (/[\r\n]/.test(value)) throw new Error("Runner service arguments cannot contain newlines.");
   return `"${value.replaceAll("%", "%%").replaceAll('"', '""')}"`;
 }
+function safeRunnerRoot(root) {
+  const target = resolve(root);
+  const home = resolve(homedir());
+  const filesystemRoot = resolve(target, "..") === target;
+  if (target === home || filesystemRoot || target.length < 8) {
+    const error = new Error("Refusing to remove an unsafe Runner directory.");
+    error.code = "RUNNER_CLEANUP_UNSAFE_PATH";
+    throw error;
+  }
+  return target;
+}
+function stopDetachedRunner(root) {
+  const pidPath = join(root, "service.pid");
+  if (!existsSync(pidPath)) return false;
+  try {
+    const pid = Number(readFileSync(pidPath, "utf8").trim());
+    if (Number.isSafeInteger(pid) && pid > 1 && pid !== process2.pid) process2.kill(pid, "SIGTERM");
+  } catch {
+  }
+  return true;
+}
+function uninstallRunner({ baseUrl: baseUrl2, root = runnerRoot() }) {
+  const target = safeRunnerRoot(root);
+  const existed = existsSync(target);
+  const id = serviceId(baseUrl2);
+  let serviceRemoved = false;
+  if (process2.env.RESOLVEROOM_RUNNER_SERVICE_MODE === "detached") {
+    serviceRemoved = stopDetachedRunner(target);
+  } else if (process2.platform === "darwin") {
+    const label = `dev.resolveroom.agent-runner.${id}`;
+    const plistPath = join(homedir(), "Library", "LaunchAgents", `${label}.plist`);
+    try {
+      execFileSync("launchctl", ["bootout", `gui/${process2.getuid()}/${label}`], {
+        stdio: "ignore"
+      });
+      serviceRemoved = true;
+    } catch {
+    }
+    if (existsSync(plistPath)) {
+      rmSync(plistPath, { force: true });
+      serviceRemoved = true;
+    }
+  } else if (process2.platform === "linux") {
+    const unit = `resolveroom-runner-${id}.service`;
+    const unitPath = join(homedir(), ".config", "systemd", "user", unit);
+    try {
+      execFileSync("systemctl", ["--user", "disable", "--now", unit], { stdio: "ignore" });
+      serviceRemoved = true;
+    } catch {
+    }
+    if (existsSync(unitPath)) {
+      rmSync(unitPath, { force: true });
+      serviceRemoved = true;
+    }
+    try {
+      execFileSync("systemctl", ["--user", "daemon-reload"], { stdio: "ignore" });
+    } catch {
+    }
+  } else if (process2.platform === "win32") {
+    const task = `ResolveRoom Agent Runner ${id}`;
+    try {
+      execFileSync("schtasks.exe", ["/End", "/TN", task], { stdio: "ignore" });
+    } catch {
+    }
+    try {
+      execFileSync("schtasks.exe", ["/Delete", "/F", "/TN", task], { stdio: "ignore" });
+      serviceRemoved = true;
+    } catch {
+    }
+  } else {
+    serviceRemoved = stopDetachedRunner(target);
+  }
+  rmSync(target, { recursive: true, force: true });
+  return {
+    service_removed: serviceRemoved,
+    runtime_removed: existed,
+    already_clean: !existed && !serviceRemoved
+  };
+}
 async function waitUntilOnline(request2, timeoutMs = 2e4) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -4285,6 +4365,7 @@ async function runRunnerCommand({
     return null;
   }
   if (subcommand === "status") return request2("/agent/runner");
+  if (subcommand === "uninstall") return uninstallRunner({ baseUrl: baseUrl2 });
   if (subcommand === "install" || subcommand === "reconnect") {
     const installed = installRunner({
       baseUrl: baseUrl2,
@@ -4312,8 +4393,10 @@ import {
   accessSync as accessSync2,
   chmodSync as chmodSync2,
   constants as constants2,
+  existsSync as existsSync2,
   mkdirSync as mkdirSync2,
   readFileSync as readFileSync2,
+  rmSync as rmSync2,
   renameSync as renameSync2,
   writeFileSync as writeFileSync2
 } from "node:fs";
@@ -4389,6 +4472,53 @@ function storeCredential(token) {
   }
   return path;
 }
+function removeCredential() {
+  const path = credentialFile();
+  let fileCredentialRemoved = false;
+  if (existsSync2(path)) {
+    let values;
+    try {
+      values = JSON.parse(readFileSync2(path, "utf8"));
+    } catch {
+      const error = new Error(
+        "ResolveRoom could not safely read the local credential store. Repair or remove that file manually, then retry cleanup."
+      );
+      error.code = "CREDENTIAL_CLEANUP_FAILED";
+      throw error;
+    }
+    try {
+      if (typeof values[baseUrl] === "string") {
+        delete values[baseUrl];
+        fileCredentialRemoved = true;
+        if (Object.keys(values).length === 0) rmSync2(path, { force: true });
+        else {
+          const temporaryPath = `${path}.${process3.pid}.new`;
+          writeFileSync2(temporaryPath, JSON.stringify(values, null, 2), { mode: 384 });
+          chmodSync2(temporaryPath, 384);
+          renameSync2(temporaryPath, path);
+          chmodSync2(path, 384);
+        }
+      }
+    } catch {
+      const error = new Error(
+        "ResolveRoom could not remove this origin from the local credential store. Check file permissions, then retry cleanup."
+      );
+      error.code = "CREDENTIAL_CLEANUP_FAILED";
+      throw error;
+    }
+  }
+  let keychainCredentialRemoved = false;
+  if (process3.platform === "darwin" && !useFileCredentialStore) {
+    try {
+      execFileSync2("security", ["delete-generic-password", "-a", baseUrl, "-s", keychainService], {
+        stdio: "ignore"
+      });
+      keychainCredentialRemoved = true;
+    } catch {
+    }
+  }
+  return { fileCredentialRemoved, keychainCredentialRemoved };
+}
 function validateCredentialStore() {
   const directory = dirname2(credentialFile());
   mkdirSync2(directory, { recursive: true, mode: 448 });
@@ -4456,14 +4586,16 @@ function usage() {
 Usage:
   resolveroom connect <pairing-code> [--origin https://resolveroom.example]
   resolveroom pair <pairing-code> [--origin https://resolveroom.example]
-  resolveroom runner <start|status|install|reconnect>
+  resolveroom runner <start|status|install|reconnect|uninstall>
   resolveroom tasks
   resolveroom wait [timeout-seconds]
   resolveroom context <conflict-id>
   printf '%s' '<response>' | resolveroom act <conflict-id> <action> [request-id]
 
 Connect stores the credential, installs an always-on local Runner, and verifies it is online.
-Pair stores only the credential for custom/manual workflows. The act command reads content from stdin.`);
+Pair stores only the credential for custom/manual workflows. Runner uninstall removes the local
+service, private runtime, logs, and this origin's stored credential. The act command reads content
+from stdin.`);
 }
 async function exchangePairing(code) {
   if (!code) throw new Error("pairing requires the one-time pairing code.");
@@ -4553,18 +4685,30 @@ async function main() {
       break;
     }
     case "runner": {
-      connectionStage = "runner_recovery";
+      const [runnerCommand = "status"] = args;
+      connectionStage = runnerCommand === "uninstall" ? "runner_cleanup" : "runner_recovery";
       const { runRunnerCommand: runRunnerCommand2 } = await Promise.resolve().then(() => (init_resolveroom_runner(), resolveroom_runner_exports));
       const value = await runRunnerCommand2({
         args,
         baseUrl,
-        token: agentToken(),
+        token: runnerCommand === "uninstall" ? null : agentToken(),
         request: (path, init) => request(path, init),
         mainScript: fileURLToPath(import.meta.url),
         runnerScript: selfContainedBundle ? fileURLToPath(import.meta.url) : fileURLToPath(new URL("./resolveroom-runner.mjs", import.meta.url))
       });
+      const credentials = runnerCommand === "uninstall" ? removeCredential() : null;
       connectionStage = null;
-      if (value) print(value);
+      if (value)
+        print(
+          runnerCommand === "uninstall" ? {
+            cleaned: true,
+            origin: baseUrl,
+            service_removed: value.service_removed,
+            runtime_removed: value.runtime_removed,
+            credential_removed: credentials.fileCredentialRemoved || credentials.keychainCredentialRemoved,
+            already_clean: value.already_clean && !credentials.fileCredentialRemoved && !credentials.keychainCredentialRemoved
+          } : value
+        );
       break;
     }
     case "tasks": {

@@ -101,6 +101,8 @@ const codexNetworkExecution = (origin: string) => ({
   when_approval_policy_is_never:
     'Do not request unavailable escalation. If this environment already has network access, invoke the exact bundled Node executable normally. If it does not, stop without invoking it; the pairing code remains unconsumed.',
 });
+const codexRuntimePreparation = (origin: string, purpose: string) =>
+  `call Codex's \`load_workspace_dependencies\` tool and select its returned \`node executable\`. Check the current execution environment before invoking it. If that environment already has network access, invoke the exact bundled Node normally—even when its approval policy is \`Never\`; do not request unavailable escalation. If network is restricted and approval is supported, first call \`exec_command\` with \`sandbox_permissions: "require_escalated"\` and the justification “Allow the bundled Node executable to connect only to ${origin} so it can ${purpose}.” If network is restricted and the approval policy is \`Never\`, stop without invoking the command and report that this task needs a network-enabled local environment`;
 
 const jsonBody = async (c: Context) => {
   try {
@@ -133,13 +135,13 @@ const safeLogPath = (path: string) =>
 export function createApi(db: Database, options: Options = {}) {
   const app = new Hono<AppEnv>();
   const notifications = new NotificationService(db, options.emailProvider);
-  const conflicts = new ConflictService(db, notifications);
+  const judgeEnabled = options.judgeEnabled ?? true;
+  const conflicts = new ConflictService(db, notifications, judgeEnabled);
   const judge = new JudgeService(
     db,
     options.judgeProvider ?? new MockJudgeProvider(),
     notifications,
   );
-  const judgeEnabled = options.judgeEnabled ?? true;
   const judgeMode = judgeEnabled ? (options.judgeMode ?? 'mock') : 'disabled';
   const runnerStatus = options.runnerStatus ?? (async () => disconnectedRunnerStatus());
   app.use('*', secureHeaders());
@@ -287,6 +289,12 @@ export function createApi(db: Database, options: Options = {}) {
           '--origin',
           allowedOrigin,
         ]),
+        uninstall: bootstrapCommand(allowedOrigin, [
+          'runner',
+          'uninstall',
+          '--origin',
+          allowedOrigin,
+        ]),
         pair: bootstrapCommand(allowedOrigin, [
           'pair',
           '<PAIRING_CODE>',
@@ -308,6 +316,12 @@ export function createApi(db: Database, options: Options = {}) {
           reconnect_arguments: bootstrapArguments(allowedOrigin, [
             'runner',
             'reconnect',
+            '--origin',
+            allowedOrigin,
+          ]),
+          uninstall_arguments: bootstrapArguments(allowedOrigin, [
+            'runner',
+            'uninstall',
             '--origin',
             allowedOrigin,
           ]),
@@ -651,6 +665,48 @@ export function createApi(db: Database, options: Options = {}) {
       throw new DomainError('NOT_FOUND', 'Agent not found.', 404);
     return c.json({ agent: { ...value, runner: await runnerStatus(value.id) } });
   });
+  app.get('/api/v1/agents/:id/local-cleanup', async (c) => {
+    const user = human(c);
+    const agentId = c.req.param('id');
+    const agent = await db.getAgent(agentId);
+    if (!agent || agent.ownerUserId !== user.id || agent.status !== 'active')
+      throw new DomainError('NOT_FOUND', 'Agent not found.', 404);
+    const assigned = (await db.listConflictsForAgent(agentId)).find((conflict) =>
+      ['active', 'paused', 'judging'].includes(conflict.status),
+    );
+    if (assigned)
+      throw new DomainError(
+        'INVALID_STATE',
+        'This Runner is assigned to an unfinished conflict. Resolve or cancel that conflict before local cleanup.',
+        409,
+      );
+    const args = bootstrapArguments(allowedOrigin, [
+      'runner',
+      'uninstall',
+      '--origin',
+      allowedOrigin,
+    ]);
+    const preparation = codexRuntimePreparation(allowedOrigin, 'remove the ResolveRoom Runner');
+    c.header('Cache-Control', 'no-store, private');
+    return c.json({
+      instruction: `Remove this computer's ResolveRoom Runner for ${allowedOrigin}. First ${preparation}. Once network access is available, invoke that exact Node executable directly and exactly once with this JSON argument array: \`${JSON.stringify(args)}\`. Do not use the system Node.js, npm, npx, pnpm, GitHub, or a package registry. Do not wrap, redirect, capture, or parse the command output. This same-origin cleanup stops and unregisters the background service, terminates any recorded fallback process, removes the private Runner runtime and logs, and deletes only this ResolveRoom origin's local credential, including its macOS Keychain entry when present. It is idempotent and returns a credential-redacted structured result. It does not delete the server-side Agent identity; return to ResolveRoom after it succeeds and finish step 2 there.`,
+      command: bootstrapCommand(allowedOrigin, ['runner', 'uninstall', '--origin', allowedOrigin]),
+      codex_runtime: {
+        tool: 'load_workspace_dependencies',
+        node_field: 'node executable',
+        distribution: 'same-origin self-contained cleanup',
+        execution: codexNetworkExecution(allowedOrigin),
+        bootstrap_sha256: agentAssets.bootstrapSha256,
+        bundle_sha256: agentAssets.bundleSha256,
+        arguments: args,
+      },
+      scope: {
+        origin: allowedOrigin,
+        removes: ['background service', 'Runner process', 'private runtime and logs', 'credential'],
+        server_agent_deleted: false,
+      },
+    });
+  });
   app.delete('/api/v1/agents/:id', async (c) => {
     const user = human(c);
     const agentId = c.req.param('id');
@@ -811,7 +867,7 @@ export function createApi(db: Database, options: Options = {}) {
       '--origin',
       allowedOrigin,
     ]);
-    const runtimePreparation = `call Codex's \`load_workspace_dependencies\` tool and select its returned \`node executable\`. Check the current execution environment before invoking it. If that environment already has network access, invoke the exact bundled Node normally—even when its approval policy is \`Never\`; do not request unavailable escalation. If network is restricted and approval is supported, first call \`exec_command\` with \`sandbox_permissions: "require_escalated"\` and the justification “Allow the bundled Node executable to connect only to ${allowedOrigin} so it can install or reconnect the ResolveRoom Runner.” If network is restricted and the approval policy is \`Never\`, stop without invoking the command and report that this task needs a network-enabled local environment; the pairing code will remain unconsumed`;
+    const runtimePreparation = `${codexRuntimePreparation(allowedOrigin, 'install or reconnect the ResolveRoom Runner')}; the pairing code will remain unconsumed`;
     return c.json(
       {
         pairing: pairingView(pairing),
@@ -955,6 +1011,12 @@ export function createApi(db: Database, options: Options = {}) {
         503,
       );
     return c.json({ verdict: await judge.run(c.req.param('id')) });
+  });
+  app.post('/api/v1/conflicts/:id/complete', async (c) => {
+    await discardRequestBody(c);
+    return c.json({
+      conflict: await conflicts.completeWithoutJudge(c.req.param('id'), human(c).id),
+    });
   });
   app.get('/api/v1/conflicts/:id/verdict', async (c) => {
     await conflicts.requireParticipant(c.req.param('id'), human(c).id);

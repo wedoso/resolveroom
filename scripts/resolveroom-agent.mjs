@@ -6,8 +6,10 @@ import {
   accessSync,
   chmodSync,
   constants,
+  existsSync,
   mkdirSync,
   readFileSync,
+  rmSync,
   renameSync,
   writeFileSync,
 } from 'node:fs';
@@ -97,6 +99,55 @@ function storeCredential(token) {
   return path;
 }
 
+function removeCredential() {
+  const path = credentialFile();
+  let fileCredentialRemoved = false;
+  if (existsSync(path)) {
+    let values;
+    try {
+      values = JSON.parse(readFileSync(path, 'utf8'));
+    } catch {
+      const error = new Error(
+        'ResolveRoom could not safely read the local credential store. Repair or remove that file manually, then retry cleanup.',
+      );
+      error.code = 'CREDENTIAL_CLEANUP_FAILED';
+      throw error;
+    }
+    try {
+      if (typeof values[baseUrl] === 'string') {
+        delete values[baseUrl];
+        fileCredentialRemoved = true;
+        if (Object.keys(values).length === 0) rmSync(path, { force: true });
+        else {
+          const temporaryPath = `${path}.${process.pid}.new`;
+          writeFileSync(temporaryPath, JSON.stringify(values, null, 2), { mode: 0o600 });
+          chmodSync(temporaryPath, 0o600);
+          renameSync(temporaryPath, path);
+          chmodSync(path, 0o600);
+        }
+      }
+    } catch {
+      const error = new Error(
+        'ResolveRoom could not remove this origin from the local credential store. Check file permissions, then retry cleanup.',
+      );
+      error.code = 'CREDENTIAL_CLEANUP_FAILED';
+      throw error;
+    }
+  }
+  let keychainCredentialRemoved = false;
+  if (process.platform === 'darwin' && !useFileCredentialStore) {
+    try {
+      execFileSync('security', ['delete-generic-password', '-a', baseUrl, '-s', keychainService], {
+        stdio: 'ignore',
+      });
+      keychainCredentialRemoved = true;
+    } catch {
+      // A missing Keychain item is an idempotent already-clean result.
+    }
+  }
+  return { fileCredentialRemoved, keychainCredentialRemoved };
+}
+
 function validateCredentialStore() {
   const directory = dirname(credentialFile());
   mkdirSync(directory, { recursive: true, mode: 0o700 });
@@ -171,14 +222,16 @@ function usage() {
 Usage:
   resolveroom connect <pairing-code> [--origin https://resolveroom.example]
   resolveroom pair <pairing-code> [--origin https://resolveroom.example]
-  resolveroom runner <start|status|install|reconnect>
+  resolveroom runner <start|status|install|reconnect|uninstall>
   resolveroom tasks
   resolveroom wait [timeout-seconds]
   resolveroom context <conflict-id>
   printf '%s' '<response>' | resolveroom act <conflict-id> <action> [request-id]
 
 Connect stores the credential, installs an always-on local Runner, and verifies it is online.
-Pair stores only the credential for custom/manual workflows. The act command reads content from stdin.`);
+Pair stores only the credential for custom/manual workflows. Runner uninstall removes the local
+service, private runtime, logs, and this origin's stored credential. The act command reads content
+from stdin.`);
 }
 
 async function exchangePairing(code) {
@@ -279,20 +332,38 @@ async function main() {
       break;
     }
     case 'runner': {
-      connectionStage = 'runner_recovery';
+      const [runnerCommand = 'status'] = args;
+      connectionStage = runnerCommand === 'uninstall' ? 'runner_cleanup' : 'runner_recovery';
       const { runRunnerCommand } = await import('./resolveroom-runner.mjs');
       const value = await runRunnerCommand({
         args,
         baseUrl,
-        token: agentToken(),
+        token: runnerCommand === 'uninstall' ? null : agentToken(),
         request: (path, init) => request(path, init),
         mainScript: fileURLToPath(import.meta.url),
         runnerScript: selfContainedBundle
           ? fileURLToPath(import.meta.url)
           : fileURLToPath(new URL('./resolveroom-runner.mjs', import.meta.url)),
       });
+      const credentials = runnerCommand === 'uninstall' ? removeCredential() : null;
       connectionStage = null;
-      if (value) print(value);
+      if (value)
+        print(
+          runnerCommand === 'uninstall'
+            ? {
+                cleaned: true,
+                origin: baseUrl,
+                service_removed: value.service_removed,
+                runtime_removed: value.runtime_removed,
+                credential_removed:
+                  credentials.fileCredentialRemoved || credentials.keychainCredentialRemoved,
+                already_clean:
+                  value.already_clean &&
+                  !credentials.fileCredentialRemoved &&
+                  !credentials.keychainCredentialRemoved,
+              }
+            : value,
+        );
       break;
     }
     case 'tasks': {

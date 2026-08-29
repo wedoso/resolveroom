@@ -64,6 +64,34 @@ describe('agent lifecycle', () => {
     ).toBe(401);
   });
 
+  it('returns a same-origin credential-free local cleanup instruction', async () => {
+    const h = await harness();
+    const agent = (
+      await h.request('/api/v1/agents', {
+        method: 'POST',
+        headers: h.headers,
+        body: JSON.stringify({ name: 'Cleanup Agent' }),
+      })
+    ).body.agent;
+    const value = await h.request(`/api/v1/agents/${agent.id}/local-cleanup`, {
+      headers: h.headers,
+    });
+    expect(value.response.status).toBe(200);
+    expect(value.body.scope).toMatchObject({
+      origin: 'http://agents.test',
+      server_agent_deleted: false,
+    });
+    expect(value.body.codex_runtime.arguments.slice(-4)).toEqual([
+      'runner',
+      'uninstall',
+      '--origin',
+      'http://agents.test',
+    ]);
+    expect(value.body.instruction).toContain('background service');
+    expect(JSON.stringify(value.body)).not.toContain('rr_agent_');
+    expect(JSON.stringify(value.body)).not.toContain('github.com');
+  });
+
   it('blocks deletion while the agent is assigned to an active conflict', async () => {
     const h = await harness();
     const conflict = (
@@ -101,6 +129,10 @@ describe('agent lifecycle', () => {
     });
     expect(deleted.response.status).toBe(409);
     expect(deleted.body.error.code).toBe('INVALID_STATE');
+    const cleanup = await h.request(`/api/v1/agents/${agent.id}/local-cleanup`, {
+      headers: h.headers,
+    });
+    expect(cleanup.response.status).toBe(409);
     expect((await h.db.getAgent(agent.id))?.status).toBe('active');
   });
 

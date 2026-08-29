@@ -28,7 +28,52 @@ export class ConflictService {
   constructor(
     readonly db: Database,
     private readonly notifications = new NotificationService(db),
+    private readonly judgeEnabled = true,
   ) {}
+
+  private async resolveWithoutJudge(conflict: Conflict, reason: string): Promise<Conflict> {
+    const timestamp = now();
+    const resolved: Conflict = {
+      ...conflict,
+      status: 'resolved',
+      resolvedAt: timestamp,
+      updatedAt: timestamp,
+      version: conflict.version + 1,
+    };
+    await this.db.updateConflict(resolved);
+    await this.db.appendEvent({
+      conflictId: conflict.id,
+      eventType: 'conflict_resolved',
+      actorType: 'system',
+      actorId: null,
+      partyId: null,
+      partyRole: null,
+      visibility: 'case',
+      payload: { reason, verdict_available: false },
+    });
+    await this.notifications.forConflict(
+      conflict.id,
+      'conflict_resolved',
+      'The structured exchange is complete',
+      'Both sides finished the protocol. The record is closed without an advisory assessment.',
+    );
+    await this.db.recordAnalytics('conflict_resolved', null, conflict.id, {
+      judge: 'disabled',
+      reason,
+    });
+    return resolved;
+  }
+
+  async completeWithoutJudge(conflictId: string, userId: string) {
+    return this.serialize(conflictId, async () => {
+      const { conflict } = await this.requireParticipant(conflictId, userId);
+      if (this.judgeEnabled)
+        throw new DomainError('INVALID_STATE', 'This deployment uses the Judge workflow.', 409);
+      if (conflict.status !== 'judging')
+        throw new DomainError('INVALID_STATE', 'This conflict is not awaiting completion.', 409);
+      return this.resolveWithoutJudge(conflict, 'judge_unavailable');
+    });
+  }
 
   private async serialize<T>(conflictId: string, work: () => Promise<T>): Promise<T> {
     const previous = this.locks.get(conflictId) ?? Promise.resolve();
@@ -449,7 +494,7 @@ export class ConflictService {
         await this.db.recordAnalytics('first_argument_submitted', null, conflictId, {
           agent_id: agentId,
         });
-      let updated = {
+      let updated: Conflict = {
         ...conflict,
         status: transition.state.status,
         currentPhase: transition.state.phase,
@@ -470,26 +515,33 @@ export class ConflictService {
           payload: { phase: transition.state.phase, round: transition.state.phaseIndex + 1 },
         });
       if (transition.completed) {
-        await this.db.appendEvent({
-          conflictId,
-          eventType: 'judging_started',
-          actorType: 'system',
-          actorId: null,
-          partyId: null,
-          partyRole: null,
-          visibility: 'case',
-          payload: {
-            reason: action.action_type === 'concede' ? 'concession' : 'protocol_complete',
-          },
-        });
-        updated = { ...updated, status: 'judging' };
-        await this.db.updateConflict(updated);
-        await this.notifications.forConflict(
-          conflictId,
-          'judging_started',
-          'The Judge is evaluating the case',
-          'The structured exchange is complete. A verdict is being prepared.',
-        );
+        if (this.judgeEnabled) {
+          await this.db.appendEvent({
+            conflictId,
+            eventType: 'judging_started',
+            actorType: 'system',
+            actorId: null,
+            partyId: null,
+            partyRole: null,
+            visibility: 'case',
+            payload: {
+              reason: action.action_type === 'concede' ? 'concession' : 'protocol_complete',
+            },
+          });
+          updated = { ...updated, status: 'judging' };
+          await this.db.updateConflict(updated);
+          await this.notifications.forConflict(
+            conflictId,
+            'judging_started',
+            'The Judge is evaluating the case',
+            'The structured exchange is complete. A verdict is being prepared.',
+          );
+        } else {
+          updated = await this.resolveWithoutJudge(
+            updated,
+            action.action_type === 'concede' ? 'concession' : 'protocol_complete',
+          );
+        }
       } else {
         const next = protocol.getCurrentSpeaker(transition.state);
         const nextParty = parties.find((p) => p.role === next);
@@ -506,7 +558,7 @@ export class ConflictService {
         event: appended.event,
         duplicate: false,
         conflict: updated,
-        needsJudging: transition.completed,
+        needsJudging: transition.completed && this.judgeEnabled,
       };
     });
   }
@@ -572,7 +624,7 @@ export class ConflictService {
       const { conflict, party } = await this.requireParticipant(conflictId, userId);
       if (conflict.status !== 'active')
         throw new DomainError('INVALID_STATE', 'Only an active conflict can be conceded.', 409);
-      const updated = {
+      let updated: Conflict = {
         ...conflict,
         status: 'judging' as const,
         updatedAt: now(),
@@ -588,23 +640,25 @@ export class ConflictService {
         visibility: 'case',
         payload: { action_type: 'concede', content: '' },
       });
-      await this.db.appendEvent({
-        conflictId,
-        eventType: 'judging_started',
-        actorType: 'system',
-        actorId: null,
-        partyId: null,
-        partyRole: null,
-        visibility: 'case',
-        payload: { reason: 'human_concession' },
-      });
       await this.db.updateConflict(updated);
-      await this.notifications.forConflict(
-        conflictId,
-        'judging_started',
-        'The conflict was conceded',
-        `${party.displayName} conceded. The Judge is preparing a short assessment.`,
-      );
+      if (this.judgeEnabled) {
+        await this.db.appendEvent({
+          conflictId,
+          eventType: 'judging_started',
+          actorType: 'system',
+          actorId: null,
+          partyId: null,
+          partyRole: null,
+          visibility: 'case',
+          payload: { reason: 'human_concession' },
+        });
+        await this.notifications.forConflict(
+          conflictId,
+          'judging_started',
+          'The conflict was conceded',
+          `${party.displayName} conceded. The Judge is preparing a short assessment.`,
+        );
+      } else updated = await this.resolveWithoutJudge(updated, 'human_concession');
       return updated;
     });
   }
@@ -668,7 +722,7 @@ export class ConflictService {
         visibility: 'case',
         payload: { reason: 'turn_timeout', phase: snapshot.phase },
       });
-      const updated = {
+      let updated: Conflict = {
         ...conflict,
         status: transition.state.status,
         currentPhase: transition.state.phase,
@@ -688,18 +742,21 @@ export class ConflictService {
           visibility: 'case',
           payload: { phase: transition.state.phase, round: transition.state.phaseIndex + 1 },
         });
-      if (transition.completed)
-        await this.db.appendEvent({
-          conflictId,
-          eventType: 'judging_started',
-          actorType: 'system',
-          actorId: null,
-          partyId: null,
-          partyRole: null,
-          visibility: 'case',
-          payload: { reason: 'protocol_complete_after_timeout' },
-        });
-      return { changed: true, needsJudging: transition.completed };
+      if (transition.completed) {
+        if (this.judgeEnabled)
+          await this.db.appendEvent({
+            conflictId,
+            eventType: 'judging_started',
+            actorType: 'system',
+            actorId: null,
+            partyId: null,
+            partyRole: null,
+            visibility: 'case',
+            payload: { reason: 'protocol_complete_after_timeout' },
+          });
+        else updated = await this.resolveWithoutJudge(updated, 'protocol_complete_after_timeout');
+      }
+      return { changed: true, needsJudging: transition.completed && this.judgeEnabled };
     });
   }
   async cancel(conflictId: string, userId: string) {

@@ -405,7 +405,11 @@ export class ConflictRoom extends DurableObject<Env> {
   }
   private async runAlarm() {
     const db = new D1Store(this.env.DB);
-    const conflicts = new ConflictService(db);
+    const conflicts = new ConflictService(
+      db,
+      new NotificationService(db, emailProvider(this.env)),
+      judgeEnabled(this.env),
+    );
     const conflictId = await this.ctx.storage.get<string>('conflictId');
     if (!conflictId) return;
     const result = await conflicts.handleAlarm(conflictId);

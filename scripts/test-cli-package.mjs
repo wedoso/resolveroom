@@ -105,8 +105,52 @@ try {
   if (!plist.includes('RESOLVEROOM_CODEX_EXECUTABLE'))
     throw new Error('The macOS service did not preserve the validated Codex executable.');
 
+  const cleanupRoot = join(root, 'cleanup-runner');
+  const configRoot = join(root, 'cleanup-config');
+  const credentialPath = join(configRoot, 'resolveroom', 'credentials.json');
+  mkdirSync(cleanupRoot, { recursive: true });
+  mkdirSync(join(configRoot, 'resolveroom'), { recursive: true });
+  writeFileSync(join(cleanupRoot, 'runner.log'), 'local test log');
+  writeFileSync(
+    credentialPath,
+    JSON.stringify({
+      'https://resolveroom.example': 'rr_agent_cleanup_test',
+      'https://other.example': 'rr_agent_other_test',
+    }),
+    { mode: 0o600 },
+  );
+  const cleanupEnvironment = {
+    ...process.env,
+    RESOLVEROOM_RUNNER_ROOT: cleanupRoot,
+    RESOLVEROOM_RUNNER_SERVICE_MODE: 'detached',
+    RESOLVEROOM_CREDENTIAL_STORE: 'file',
+    XDG_CONFIG_HOME: configRoot,
+  };
+  const cleaned = JSON.parse(
+    execFileSync(
+      process.execPath,
+      [bundle, 'runner', 'uninstall', '--origin', 'https://resolveroom.example'],
+      { encoding: 'utf8', env: cleanupEnvironment },
+    ),
+  );
+  if (!cleaned.cleaned || existsSync(cleanupRoot))
+    throw new Error('Runner cleanup did not remove the private runtime.');
+  const remainingCredentials = JSON.parse(readFileSync(credentialPath, 'utf8'));
+  if (remainingCredentials['https://resolveroom.example'])
+    throw new Error('Runner cleanup did not remove the selected origin credential.');
+  if (remainingCredentials['https://other.example'] !== 'rr_agent_other_test')
+    throw new Error('Runner cleanup changed an unrelated origin credential.');
+  const repeated = JSON.parse(
+    execFileSync(
+      process.execPath,
+      [bundle, 'runner', 'uninstall', '--origin', 'https://resolveroom.example'],
+      { encoding: 'utf8', env: cleanupEnvironment },
+    ),
+  );
+  if (!repeated.already_clean) throw new Error('Runner cleanup is not idempotent.');
+
   process.stdout.write(
-    'Self-contained CLI starts offline, validates Codex, and installs without GitHub or package managers.\n',
+    'Self-contained CLI starts offline, installs without package managers, and cleans Runner state idempotently.\n',
   );
 } finally {
   rmSync(root, { recursive: true, force: true });

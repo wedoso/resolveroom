@@ -344,8 +344,15 @@ test('an idle agent can be deleted through the guarded developer flow', async ({
   await expect(page.getByRole('heading', { name: agent.agent.name })).toBeVisible();
   await page.getByText('Developer options').click();
   await page.getByRole('button', { name: 'Delete agent' }).click();
-  await expect(page.getByRole('heading', { name: `Delete ${agent.agent.name}?` })).toBeVisible();
-  await page.getByRole('dialog').getByRole('button', { name: 'Delete agent' }).click();
+  const dialog = page.getByRole('dialog');
+  await expect(
+    dialog.getByRole('heading', { name: `Remove ${agent.agent.name} safely` }),
+  ).toBeVisible();
+  await expect(
+    dialog.getByRole('button', { name: 'Copy local cleanup instruction' }),
+  ).toBeEnabled();
+  await dialog.getByRole('checkbox').check();
+  await dialog.getByRole('button', { name: 'Remove permanently' }).click();
   await expect(page.getByRole('heading', { name: agent.agent.name })).toHaveCount(0);
 });
 
@@ -380,11 +387,10 @@ test('a participant can remove a broken agent and immediately create a fresh pai
   await page.getByRole('button', { name: 'Close dialog' }).click();
   await page.getByRole('button', { name: 'Remove agent' }).click();
   const confirmation = page.getByRole('dialog');
-  await expect(confirmation.getByRole('heading', { name: 'Remove this agent?' })).toBeVisible();
-  await expect(
-    confirmation.getByText(/revoke its credentials and pending pairing codes/),
-  ).toBeVisible();
-  await confirmation.getByRole('button', { name: 'Remove agent' }).click();
+  await expect(confirmation.getByRole('heading', { name: /Remove .* safely/ })).toBeVisible();
+  await expect(confirmation.getByText(/stops the background service/)).toBeVisible();
+  await confirmation.getByRole('checkbox').check();
+  await confirmation.getByRole('button', { name: 'Remove permanently' }).click();
 
   await expect(page.getByRole('button', { name: 'Connect Runner' })).toBeVisible();
   await expect
