@@ -5,6 +5,7 @@ import type { JudgeProvider } from './providers';
 import { judgeInputFromEvents, validateVerdict } from './providers';
 import { NotificationService } from '@/notifications/service';
 import type { JudgeVerdict } from '@/domain/types';
+import { JudgeQuotaError, type JudgeQuotaWait } from './quota';
 
 export class JudgeService {
   constructor(
@@ -12,6 +13,13 @@ export class JudgeService {
     private readonly provider: JudgeProvider,
     private readonly notifications = new NotificationService(db),
   ) {}
+  async quotaStatus(): Promise<JudgeQuotaWait | null> {
+    if (!this.provider.quotaScope) return null;
+    const retryAt = await this.db.getJudgeCooldown(this.provider.quotaScope);
+    return retryAt && Date.parse(retryAt) > Date.now()
+      ? { reason: 'daily_quota_exhausted', retry_at: retryAt }
+      : null;
+  }
   async run(conflictId: string) {
     const conflict = await this.db.getConflict(conflictId);
     if (!conflict) throw new DomainError('NOT_FOUND', 'Conflict not found.', 404);
@@ -28,10 +36,17 @@ export class JudgeService {
     const events = await this.db.listEvents(conflictId);
     const input = judgeInputFromEvents(conflict, events);
     let verdict: JudgeVerdict | undefined = existing?.verdict;
+    const quota = !verdict ? await this.quotaStatus() : null;
+    if (quota) throw new JudgeQuotaError(quota.retry_at);
     for (let attempt = 0; !verdict && attempt < 2; attempt += 1) {
       try {
         verdict = validateVerdict(await this.provider.evaluate(input), input);
-      } catch {
+      } catch (error) {
+        if (error instanceof JudgeQuotaError) {
+          if (this.provider.quotaScope)
+            await this.db.saveJudgeCooldown(this.provider.quotaScope, error.retryAt);
+          throw error;
+        }
         // Do not expose upstream errors: they can echo confidential request text.
       }
     }

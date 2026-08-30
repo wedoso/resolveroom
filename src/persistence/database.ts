@@ -81,6 +81,8 @@ export interface Database {
 
   saveVerdict(verdict: VerdictRecord): Promise<VerdictRecord>;
   getVerdict(conflictId: string): Promise<VerdictRecord | null>;
+  getJudgeCooldown(scope: string): Promise<string | null>;
+  saveJudgeCooldown(scope: string, retryAt: string): Promise<void>;
 
   createShareLink(link: ShareLink): Promise<ShareLink>;
   listShareLinks(conflictId: string): Promise<ShareLink[]>;

@@ -15,6 +15,7 @@ export type ErrorCode =
   | 'RATE_LIMITED'
   | 'JUDGE_UNAVAILABLE'
   | 'JUDGE_FAILED'
+  | 'JUDGE_QUOTA_EXHAUSTED'
   | 'VALIDATION_ERROR';
 
 export class DomainError extends Error {
@@ -45,5 +46,6 @@ export const errorStatus: Record<ErrorCode, number> = {
   RATE_LIMITED: 429,
   JUDGE_UNAVAILABLE: 503,
   JUDGE_FAILED: 502,
+  JUDGE_QUOTA_EXHAUSTED: 429,
   VALIDATION_ERROR: 422,
 };

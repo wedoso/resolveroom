@@ -11,6 +11,7 @@ import {
   workersAIJudgeModel,
 } from '@/judge/providers';
 import { JudgeService } from '@/judge/service';
+import { isDailyQuotaError, JudgeQuotaError, nextDailyReset } from '@/judge/quota';
 import { MemoryDatabase } from '@/persistence/memory';
 import { opaqueId } from '@/domain/security';
 import type { Conflict, ConflictParty, User } from '@/domain/types';
@@ -43,7 +44,37 @@ const valid = {
 };
 
 describe('external Judge contracts', () => {
-  afterEach(() => vi.unstubAllGlobals());
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+  it.each([
+    [new Error('3036: daily limit PRIVATE_UPSTREAM_TEXT'), true],
+    [{ internalCode: 3036 }, true],
+    [{ code: 3036 }, true],
+    [new Error('3040: Out of capacity'), false],
+    [{ status: 429, message: 'rate limited' }, false],
+    [new Error('invalid output: 3036: quoted text'), false],
+    [new Error('quota exceeded'), false],
+  ])('recognizes only the documented daily quota code: %j', (error, expected) => {
+    expect(isDailyQuotaError(error)).toBe(expected);
+  });
+  it('redacts upstream quota errors and anchors a request crossing midnight to its original day', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-08-29T23:59:59Z'));
+    const run = vi.fn(async () => {
+      vi.setSystemTime(new Date('2026-08-30T00:00:01Z'));
+      throw new Error('3036: PRIVATE_UPSTREAM_TEXT');
+    });
+    const provider = new WorkersAIJudgeProvider({ run } as unknown as Pick<Ai, 'run'>);
+    const error = await provider.evaluate(input).catch((value: unknown) => value);
+    expect(error).toMatchObject({
+      code: 'JUDGE_QUOTA_EXHAUSTED',
+      retryAt: '2026-08-30T00:00:00.000Z',
+    });
+    expect(String(error)).not.toContain('PRIVATE_UPSTREAM_TEXT');
+    expect(run).toHaveBeenCalledTimes(1);
+  });
   it.each([false, true])(
     'accepts Workers AI structured output (text=%s) and supplies schema and deadline',
     async (asText) => {
@@ -201,10 +232,48 @@ async function judgingDb() {
 }
 
 describe('JudgeService retries', () => {
+  afterEach(() => vi.useRealTimers());
+  it('persists daily exhaustion across services and rooms, stops retries, and recovers at UTC midnight', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-08-29T12:00:00Z'));
+    const db = await judgingDb();
+    const evaluate = vi.fn(async () => {
+      throw new JudgeQuotaError(nextDailyReset(Date.now()));
+    });
+    const provider = { name: 'workers_ai:test', quotaScope: 'workers_ai', evaluate };
+    await expect(new JudgeService(db, provider).run(input.conflictId)).rejects.toMatchObject({
+      code: 'JUDGE_QUOTA_EXHAUSTED',
+      retryAt: '2026-08-30T00:00:00.000Z',
+    });
+    await expect(new JudgeService(db, provider).run(input.conflictId)).rejects.toBeInstanceOf(
+      JudgeQuotaError,
+    );
+    const conflict = (await db.getConflict(input.conflictId))!;
+    const parties = await db.getParties(input.conflictId);
+    await db.createConflict({ ...conflict, id: 'con_other' }, [
+      { ...parties[0], id: 'pty_other_a', conflictId: 'con_other' },
+      { ...parties[1], id: 'pty_other_b', conflictId: 'con_other' },
+    ]);
+    await expect(new JudgeService(db, provider).run('con_other')).rejects.toBeInstanceOf(
+      JudgeQuotaError,
+    );
+    expect(evaluate).toHaveBeenCalledTimes(1);
+    expect(conflict.status).toBe('judging');
+    expect(await db.getVerdict(input.conflictId)).toBeNull();
+    expect(await new JudgeService(db, new MockJudgeProvider()).quotaStatus()).toBeNull();
+    vi.setSystemTime(new Date('2026-08-30T00:00:00Z'));
+    const recovered = new JudgeService(db, {
+      ...provider,
+      evaluate: (value) => new MockJudgeProvider().evaluate(value),
+    });
+    expect(await recovered.quotaStatus()).toBeNull();
+    await recovered.run(input.conflictId);
+    expect((await db.getConflict(input.conflictId))?.status).toBe('resolved');
+  });
   it('finishes a partially persisted assessment without repeating inference or verdict events', async () => {
     const db = await judgingDb();
     const evaluate = vi.fn((value: JudgeInput) => new MockJudgeProvider().evaluate(value));
-    const service = new JudgeService(db, { name: 'mock', evaluate });
+    const service = new JudgeService(db, { name: 'mock', quotaScope: 'workers_ai', evaluate });
     const update = vi
       .spyOn(db, 'updateConflict')
       .mockRejectedValueOnce(new Error('D1 unavailable'));
@@ -212,6 +281,7 @@ describe('JudgeService retries', () => {
     expect(evaluate).toHaveBeenCalledTimes(1);
     expect(await db.getVerdict(input.conflictId)).not.toBeNull();
     expect((await db.getConflict(input.conflictId))?.status).toBe('judging');
+    await db.saveJudgeCooldown('workers_ai', nextDailyReset(Date.now()));
     const result = await service.run(input.conflictId);
     expect(result.verdict.protocolType).toBe('debate');
     expect(evaluate).toHaveBeenCalledTimes(1);
@@ -281,6 +351,43 @@ describe('JudgeService retries', () => {
 });
 
 describe('Judge deployment capability', () => {
+  it('returns a safe retry time, exposes persisted waiting state, and preserves accepted concessions', async () => {
+    const db = await judgingDb();
+    const conflict = (await db.getConflict(input.conflictId))!;
+    await db.updateConflict({ ...conflict, status: 'active' });
+    const run = vi.fn(async () => {
+      throw new Error('3036: PRIVATE_UPSTREAM_TEXT');
+    });
+    const app = createApi(db, {
+      allowDevelopmentAuth: true,
+      appUrl: 'http://judge.test',
+      judgeEnabled: true,
+      judgeProvider: new WorkersAIJudgeProvider({ run } as unknown as Pick<Ai, 'run'>),
+    });
+    const headers = { 'x-dev-user-id': [...db.users.keys()][0] };
+    const url = `http://judge.test/api/v1/conflicts/${input.conflictId}`;
+    const accepted = await app.request(`${url}/concede`, { method: 'POST', headers });
+    expect(accepted.status).toBe(200);
+    const response = await app.request(`${url}/judge`, { method: 'POST', headers });
+    expect(response.status).toBe(429);
+    expect(Number(response.headers.get('retry-after'))).toBeGreaterThan(0);
+    const body = (await response.json()) as any;
+    expect(body.error).toMatchObject({
+      code: 'JUDGE_QUOTA_EXHAUSTED',
+      retry_at: nextDailyReset(Date.now()),
+    });
+    expect(JSON.stringify(body)).not.toContain('PRIVATE_UPSTREAM_TEXT');
+    const room = await app.request(url, { headers });
+    expect(await room.json()).toMatchObject({
+      status: 'judging',
+      judge_quota: { reason: 'daily_quota_exhausted', retry_at: body.error.retry_at },
+    });
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(await db.getVerdict(input.conflictId)).toBeNull();
+    expect(
+      (await db.listEvents(input.conflictId)).some((event) => event.eventType === 'party_conceded'),
+    ).toBe(true);
+  });
   it('keeps Judge unavailable to users when no external provider is configured', async () => {
     const db = await judgingDb();
     const app = createApi(db, {

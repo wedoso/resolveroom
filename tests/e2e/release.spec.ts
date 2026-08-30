@@ -445,6 +445,63 @@ test('a participant can remove a broken agent and immediately create a fresh pai
   expect(freshParty.agent_id).not.toBe(firstParty.agent_id);
 });
 
+test('both parties see daily Judge quota recovery time and cannot retry before reset', async ({
+  page,
+  request,
+}) => {
+  const flow = await completeConflict(request, `quota-${unique()}`, 5);
+  let waiting = true;
+  let retryCalls = 0;
+  const retryAt = new Date(Date.now() + 86400_000).toISOString();
+  // Real authorized room, with a controlled provider-state response. Actual 3036
+  // mapping, concession persistence, and D1 durability are covered by backend tests.
+  await page.route(`**/api/v1/conflicts/${flow.id}`, async (route) => {
+    const response = await route.fetch();
+    const data = await response.json();
+    await route.fulfill({
+      response,
+      json: {
+        ...data,
+        status: 'judging',
+        current_turn: null,
+        judge_quota: waiting ? { reason: 'daily_quota_exhausted', retry_at: retryAt } : null,
+      },
+    });
+  });
+  await page.route(`**/api/v1/conflicts/${flow.id}/judge`, async (route) => {
+    retryCalls += 1;
+    await route.fulfill({ json: { ok: true } });
+  });
+  for (const party of [flow.alice, flow.bob]) {
+    await page.request.post('/api/v1/auth/development', {
+      data: { email: party.email, display_name: party.displayName },
+    });
+    await page.goto(`/conflicts/${flow.id}`);
+    await expect(page.getByText('Today’s free AI Judge allowance is used up.')).toBeVisible();
+    await expect(page.locator(`time[datetime="${retryAt}"]`)).toBeVisible();
+    await page.getByRole('tab', { name: 'verdict' }).click();
+    await expect(
+      page.getByRole('heading', { name: 'Assessment paused until the daily reset' }),
+    ).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Waiting for daily reset' })).toBeDisabled();
+    expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+    expect(
+      await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+    ).toBe(true);
+    await page.reload();
+    await expect(page.getByText('Today’s free AI Judge allowance is used up.')).toBeVisible();
+  }
+  expect(retryCalls).toBe(0);
+  waiting = false;
+  await page.reload();
+  await expect(page.getByText('Today’s free AI Judge allowance is used up.')).toHaveCount(0);
+  await page.getByRole('tab', { name: 'verdict' }).click();
+  await page.getByRole('button', { name: 'Retry assessment' }).click();
+  await expect.poll(() => retryCalls).toBe(1);
+  await expect(page.getByRole('button', { name: 'Retry assessment' })).toBeEnabled();
+  await page.unrouteAll({ behavior: 'wait' });
+});
+
 test('complete debate persists and renders a polished verdict', async ({ page, request }) => {
   const flow = await completeConflict(request, `debate-${unique()}`);
   await page.request.post('/api/v1/auth/development', {

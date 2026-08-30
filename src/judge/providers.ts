@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { DomainError } from '@/domain/errors';
+import { isDailyQuotaError, JudgeQuotaError, nextDailyReset } from './quota';
 import type { ConflictEvent, JudgeVerdict, PartyRole, ProtocolType } from '@/domain/types';
 
 export interface JudgeInput {
@@ -13,6 +14,7 @@ export interface JudgeInput {
 }
 export interface JudgeProvider {
   readonly name: string;
+  readonly quotaScope?: string;
   evaluate(input: JudgeInput): Promise<unknown>;
 }
 
@@ -159,20 +161,27 @@ export const workersAIJudgeModel = '@cf/meta/llama-3.3-70b-instruct-fp8-fast' as
 
 export class WorkersAIJudgeProvider implements JudgeProvider {
   readonly name = `workers_ai:${workersAIJudgeModel}`;
+  readonly quotaScope = 'workers_ai';
   constructor(private readonly ai: Pick<Ai, 'run'>) {}
 
   async evaluate(input: JudgeInput): Promise<unknown> {
-    const output = await this.ai.run(
-      workersAIJudgeModel,
-      {
-        messages: judgeMessages(input),
-        response_format: { type: 'json_schema', json_schema: judgeJsonSchema(input) },
-        max_tokens: 2400,
-        temperature: 0.1,
-        stream: false,
-      },
-      { signal: AbortSignal.timeout(30_000) },
-    );
+    const startedAt = Date.now();
+    const output = await this.ai
+      .run(
+        workersAIJudgeModel,
+        {
+          messages: judgeMessages(input),
+          response_format: { type: 'json_schema', json_schema: judgeJsonSchema(input) },
+          max_tokens: 2400,
+          temperature: 0.1,
+          stream: false,
+        },
+        { signal: AbortSignal.timeout(30_000) },
+      )
+      .catch((error: unknown) => {
+        if (isDailyQuotaError(error)) throw new JudgeQuotaError(nextDailyReset(startedAt));
+        throw error;
+      });
     const response = (output as { response?: unknown }).response;
     if (typeof response === 'string') return JSON.parse(response);
     if (response && typeof response === 'object') return response;

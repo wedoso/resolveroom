@@ -1,4 +1,5 @@
 import { DurableObject } from 'cloudflare:workers';
+import { DomainError } from '@/domain/errors';
 import { authoritativeTurn, createApi, type RunnerStatus } from '@/api/app';
 import { D1Store } from '@/persistence/d1';
 import {
@@ -422,12 +423,22 @@ export class ConflictRoom extends DurableObject<Env> {
     const conflictId = await this.ctx.storage.get<string>('conflictId');
     if (!conflictId) return;
     const result = await conflicts.handleAlarm(conflictId);
-    if (judgeEnabled(this.env) && result.needsJudging)
-      await new JudgeService(
-        db,
-        provider(this.env),
-        new NotificationService(db, emailProvider(this.env)),
-      ).run(conflictId);
+    if (judgeEnabled(this.env) && result.needsJudging) {
+      try {
+        await new JudgeService(
+          db,
+          provider(this.env),
+          new NotificationService(db, emailProvider(this.env)),
+        ).run(conflictId);
+      } catch (error) {
+        // The closing event is already durable; still broadcast the waiting state.
+        if (
+          !(error instanceof DomainError) ||
+          !['JUDGE_FAILED', 'JUDGE_QUOTA_EXHAUSTED'].includes(error.code)
+        )
+          throw error;
+      }
+    }
     await this.scheduleAlarm(conflictId);
     if (result.changed) {
       await this.dispatchCurrentTurn(conflictId);

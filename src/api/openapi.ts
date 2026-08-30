@@ -59,11 +59,17 @@ export const openapiDocument = {
                   'RATE_LIMITED',
                   'JUDGE_UNAVAILABLE',
                   'JUDGE_FAILED',
+                  'JUDGE_QUOTA_EXHAUSTED',
                   'VALIDATION_ERROR',
                 ],
               },
               message: { type: 'string' },
               request_id: { type: 'string' },
+              retry_at: {
+                type: 'string',
+                format: 'date-time',
+                description: 'Next UTC daily reset when the AI Judge allowance is exhausted.',
+              },
             },
           },
         },
@@ -438,9 +444,24 @@ export const openapiDocument = {
       post: {
         tags: ['Conflicts'],
         summary: 'Retry judging for an authorized conflict',
+        description:
+          'Daily Workers AI exhaustion preserves the transcript and returns 429 without repeating inference before retry_at. A participant may retry after the daily UTC reset.',
         parameters: conflictId,
         security: humanSession,
-        responses: ok,
+        responses: {
+          ...ok,
+          '429': {
+            description:
+              'Daily AI allowance exhausted, or temporary request rate limit. Check error.code; only JUDGE_QUOTA_EXHAUSTED indicates the daily reset.',
+            headers: {
+              'Retry-After': {
+                description: 'Seconds until another attempt is allowed.',
+                schema: { type: 'integer', minimum: 1 },
+              },
+            },
+            content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } },
+          },
+        },
       },
     },
     '/conflicts/{id}/verdict': {

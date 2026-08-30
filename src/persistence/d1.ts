@@ -665,6 +665,21 @@ export class D1Store implements Database {
         }
       : null;
   }
+  async getJudgeCooldown(scope: string) {
+    const row = await this.db
+      .prepare('SELECT retry_at FROM judge_cooldowns WHERE scope=?')
+      .bind(scope)
+      .first<{ retry_at: string }>();
+    return row?.retry_at ?? null;
+  }
+  async saveJudgeCooldown(scope: string, retryAt: string) {
+    await this.db
+      .prepare(
+        'INSERT INTO judge_cooldowns(scope,retry_at) VALUES (?,?) ON CONFLICT(scope) DO UPDATE SET retry_at=MAX(judge_cooldowns.retry_at,excluded.retry_at)',
+      )
+      .bind(scope, retryAt)
+      .run();
+  }
   async createShareLink(s: ShareLink) {
     await this.db
       .prepare('INSERT INTO share_links VALUES (?,?,?,?,?,?,?)')

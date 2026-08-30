@@ -4,6 +4,7 @@ import {
   Bot,
   Check,
   ChevronDown,
+  Clock3,
   Copy,
   FileText,
   Link2,
@@ -240,6 +241,25 @@ export function ConflictRoomPage() {
             ? 'the advisory Judge evaluates the completed record.'
             : 'the conflict closes as a completed record without a verdict.'}
         </p>
+        {c.judge_quota && (
+          <div className="privacy-note" role="status">
+            <Clock3 />
+            <div>
+              <strong>Today’s free AI Judge allowance is used up.</strong>
+              <p>Your conversation is saved. Please wait for the next daily reset.</p>
+              <p>
+                Available again:{' '}
+                <time dateTime={c.judge_quota.retry_at}>
+                  {new Date(c.judge_quota.retry_at).toLocaleString(undefined, {
+                    dateStyle: 'medium',
+                    timeStyle: 'long',
+                  })}
+                </time>{' '}
+                in your local time (daily reset: 00:00 UTC). Return then and retry the assessment.
+              </p>
+            </div>
+          </div>
+        )}
         <div className="room-grid">
           <section className="record-column">
             <div className="room-tab-bar">
@@ -351,7 +371,13 @@ export function ConflictRoomPage() {
               ) : tab === 'private brief' ? (
                 <BriefPanel id={id!} brief={data.brief} onSaved={load} />
               ) : tab === 'verdict' ? (
-                <VerdictPanel record={data.verdict} status={c.status} id={id!} load={load} />
+                <VerdictPanel
+                  record={data.verdict}
+                  status={c.status}
+                  quotaWaiting={Boolean(c.judge_quota)}
+                  id={id!}
+                  load={load}
+                />
               ) : (
                 <SettingsPanel id={id!} data={data} load={load} />
               )}
@@ -567,7 +593,9 @@ function TurnCard({
                   : 'Conflict complete'
                 : c.status === 'judging'
                   ? c.judge_available
-                    ? 'Judge is evaluating'
+                    ? c.judge_quota
+                      ? 'Waiting for daily AI reset'
+                      : 'Judge is evaluating'
                     : 'Ready to complete'
                   : c.status === 'briefing'
                     ? 'Waiting for both participants'
@@ -576,11 +604,13 @@ function TurnCard({
             <p>
               {c.status === 'resolved'
                 ? c.judge_available
-                  ? 'The six-turn exchange and advisory assessment are finished.'
-                  : 'The six-turn exchange is closed. No verdict was generated.'
+                  ? 'The exchange and advisory assessment are finished.'
+                  : 'The exchange is closed. No verdict was generated.'
                 : c.status === 'judging' && !c.judge_available
                   ? 'This is a conflict completed before record-only finalization was enabled. Close it now without a verdict.'
-                  : 'No agent action is currently accepted.'}
+                  : c.judge_quota
+                    ? 'Your conversation is saved. Retry the assessment after the daily allowance resets.'
+                    : 'No agent action is currently accepted.'}
             </p>
             {c.status === 'judging' && !c.judge_available && (
               <button className="button wide" disabled={busy} onClick={() => void complete()}>
@@ -1046,11 +1076,13 @@ function BriefPanel({
 function VerdictPanel({
   record,
   status,
+  quotaWaiting,
   id,
   load,
 }: {
   record: any;
   status: string;
+  quotaWaiting: boolean;
   id: string;
   load: () => Promise<void>;
 }) {
@@ -1064,6 +1096,7 @@ function VerdictPanel({
       await load();
     } catch (value) {
       setError(value instanceof Error ? value.message : 'Assessment unavailable. Try later.');
+      await load();
     } finally {
       setBusy(false);
     }
@@ -1075,17 +1108,29 @@ function VerdictPanel({
         <span className="eyebrow">ADVISORY ASSESSMENT</span>
         <h2>
           {status === 'judging'
-            ? 'The Judge is evaluating the case'
+            ? quotaWaiting
+              ? 'Assessment paused until the daily reset'
+              : 'The Judge is evaluating the case'
             : 'The verdict is not available yet'}
         </h2>
         <p>
           {status === 'judging'
-            ? 'The exchange is finished; the assessment is pending. If the provider is unavailable or its free quota is exhausted, the record stays safe here. You can retry later.'
+            ? quotaWaiting
+              ? 'The free daily allowance has been used up. Both sides’ statements are saved. Wait until the recovery time shown above, then retry here; there is no need to reconnect your agents or repeat the conversation.'
+              : 'The exchange is finished; the assessment is pending. If the provider is temporarily unavailable, the record stays safe here. You can retry later.'
             : 'The Judge begins automatically after the protocol completes or a party concedes.'}
         </p>
         {status === 'judging' && (
-          <button className="button secondary" onClick={() => void retry()} disabled={busy}>
-            {busy ? 'Requesting assessment…' : 'Retry assessment'}
+          <button
+            className="button secondary"
+            onClick={() => void retry()}
+            disabled={busy || quotaWaiting}
+          >
+            {quotaWaiting
+              ? 'Waiting for daily reset'
+              : busy
+                ? 'Requesting assessment…'
+                : 'Retry assessment'}
           </button>
         )}
         {error && (

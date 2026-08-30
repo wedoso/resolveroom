@@ -23,6 +23,7 @@ import {
 import type { Database } from '@/persistence/database';
 import { ConflictService, filterEvents } from '@/services/conflicts';
 import { JudgeService } from '@/judge/service';
+import { JudgeQuotaError } from '@/judge/quota';
 import { MockJudgeProvider, type JudgeProvider } from '@/judge/providers';
 import { openapiDocument } from './openapi';
 import {
@@ -502,6 +503,10 @@ export function createApi(db: Database, options: Options = {}) {
       current_turn: authoritativeTurn(conflict, parties, events),
       judge_available: conflicts.usesJudge(conflict),
       judge_provider_available: judgeEnabled,
+      judge_quota:
+        conflicts.usesJudge(conflict) && conflict.status === 'judging'
+          ? await judge.quotaStatus()
+          : null,
       is_owner: identity.kind === 'human' && conflict.createdByUserId === identity.user.id,
       parties: await Promise.all(
         parties.map(async (p) => ({
@@ -1127,6 +1132,14 @@ export function createApi(db: Database, options: Options = {}) {
   );
   app.onError((error, c) => {
     const requestId = c.get('requestId') ?? `req_${crypto.randomUUID()}`;
+    if (error instanceof JudgeQuotaError) {
+      c.header(
+        'Retry-After',
+        String(Math.max(1, Math.ceil((Date.parse(error.retryAt) - Date.now()) / 1000))),
+      );
+      const body = errorBody(error.code, error.message, requestId);
+      return c.json({ ...body, error: { ...body.error, retry_at: error.retryAt } }, 429);
+    }
     if (error instanceof DomainError)
       return c.json(
         errorBody(error.code, error.message, requestId),
@@ -1234,7 +1247,11 @@ async function attemptAutomaticJudge(judge: JudgeService, id: string) {
   } catch (error) {
     // The agent action/concession is already durable. A provider failure must not
     // turn an accepted statement into an apparent failed submission.
-    if (error instanceof DomainError && error.code === 'JUDGE_FAILED') return null;
+    if (
+      error instanceof DomainError &&
+      ['JUDGE_FAILED', 'JUDGE_QUOTA_EXHAUSTED'].includes(error.code)
+    )
+      return null;
     throw error;
   }
 }

@@ -27,6 +27,7 @@ export class MemoryDatabase implements Database {
   pairings = new Map<string, AgentPairing>();
   invitations = new Map<string, Invitation>();
   verdicts = new Map<string, VerdictRecord>();
+  judgeCooldowns = new Map<string, string>();
   shareLinks = new Map<string, ShareLink>();
   notifications = new Map<string, Notification>();
   sessions = new Map<string, Session>();
@@ -323,6 +324,13 @@ export class MemoryDatabase implements Database {
   }
   async getVerdict(conflictId: string) {
     return structuredClone(this.verdicts.get(conflictId) ?? null);
+  }
+  async getJudgeCooldown(scope: string) {
+    return this.judgeCooldowns.get(scope) ?? null;
+  }
+  async saveJudgeCooldown(scope: string, retryAt: string) {
+    const current = this.judgeCooldowns.get(scope);
+    if (!current || retryAt > current) this.judgeCooldowns.set(scope, retryAt);
   }
 
   async createShareLink(link: ShareLink) {
