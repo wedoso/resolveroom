@@ -282,6 +282,8 @@ describe('JudgeService retries', () => {
     expect(await db.getVerdict(input.conflictId)).not.toBeNull();
     expect((await db.getConflict(input.conflictId))?.status).toBe('judging');
     await db.saveJudgeCooldown('workers_ai', nextDailyReset(Date.now()));
+    expect(await service.quotaStatus()).not.toBeNull();
+    expect(await service.quotaStatus(input.conflictId)).toBeNull();
     const result = await service.run(input.conflictId);
     expect(result.verdict.protocolType).toBe('debate');
     expect(evaluate).toHaveBeenCalledTimes(1);

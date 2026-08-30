@@ -505,7 +505,7 @@ export function createApi(db: Database, options: Options = {}) {
       judge_provider_available: judgeEnabled,
       judge_quota:
         conflicts.usesJudge(conflict) && conflict.status === 'judging'
-          ? await judge.quotaStatus()
+          ? await judge.quotaStatus(id)
           : null,
       is_owner: identity.kind === 'human' && conflict.createdByUserId === identity.user.id,
       parties: await Promise.all(

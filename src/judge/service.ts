@@ -13,12 +13,14 @@ export class JudgeService {
     private readonly provider: JudgeProvider,
     private readonly notifications = new NotificationService(db),
   ) {}
-  async quotaStatus(): Promise<JudgeQuotaWait | null> {
+  async quotaStatus(conflictId?: string): Promise<JudgeQuotaWait | null> {
     if (!this.provider.quotaScope) return null;
     const retryAt = await this.db.getJudgeCooldown(this.provider.quotaScope);
-    return retryAt && Date.parse(retryAt) > Date.now()
-      ? { reason: 'daily_quota_exhausted', retry_at: retryAt }
-      : null;
+    if (!retryAt || Date.parse(retryAt) <= Date.now()) return null;
+    // A verdict saved before a partial persistence failure needs no inference.
+    // Keep the UI retry enabled so its finalization is not blocked by other rooms.
+    if (conflictId && (await this.db.getVerdict(conflictId))) return null;
+    return { reason: 'daily_quota_exhausted', retry_at: retryAt };
   }
   async run(conflictId: string) {
     const conflict = await this.db.getConflict(conflictId);
