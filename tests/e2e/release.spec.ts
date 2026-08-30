@@ -27,6 +27,7 @@ async function completeConflict(request: APIRequestContext, suffix: string, turn
         description: 'Where should the team hold its next offsite, and why?',
         protocol_type: 'debate',
         max_rounds: 3,
+        resolution_mode: 'judge',
       },
     }),
   );
@@ -186,9 +187,35 @@ test('landing and conflict creation are polished and functional', async ({ page 
   await page.getByRole('link', { name: 'New conflict' }).click();
   await page.getByLabel('Conflict title').fill('Tokyo vs Vancouver UI');
   await page.getByLabel('Question or context').fill('Where should the team hold its next offsite?');
+  await page.getByLabel('Number of rounds').selectOption('5');
   await page.getByRole('button', { name: 'Create conflict' }).click();
   await expect(page.getByRole('heading', { name: 'Invite the other participant' })).toBeVisible();
   await expect(page.getByText('Private invitation link')).toBeVisible();
+  await page.getByRole('button', { name: 'Close dialog' }).click();
+  await expect(page.getByText('Round 1 of 5', { exact: false })).toBeVisible();
+  await page.getByRole('tab', { name: 'shared context', exact: true }).click();
+  await expect(page.locator('.shared-context-text')).toContainText(
+    'Where should the team hold its next offsite?',
+  );
+  await page.getByRole('tab', { name: 'settings', exact: true }).click();
+  await page.getByLabel('Number of rounds').selectOption('7');
+  await page
+    .getByRole('textbox', { name: /^Shared context/ })
+    .fill('Shared budget: $2,000 per person. Compare accessibility and total travel time.');
+  await page.getByLabel('Completion mode').selectOption('judge');
+  await page.getByRole('button', { name: 'Save exchange rules' }).click();
+  await expect(page.getByRole('status')).toContainText('Rules saved');
+  await page.reload();
+  await expect(page.getByText('Round 1 of 7', { exact: false })).toBeVisible();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  expect(new URL(page.url()).searchParams.has('created')).toBe(false);
+  await page.getByRole('tab', { name: 'shared context', exact: true }).click();
+  await expect(page.locator('.shared-context-text')).toContainText('Shared budget: $2,000');
+  await expect(page.getByText('AI Judge mode:', { exact: false })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
+    true,
+  );
+  expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
 });
 
 test('a participant authorizes the Runner from the conflict with one short-lived instruction', async ({

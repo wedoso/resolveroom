@@ -73,10 +73,24 @@ export const openapiDocument = {
         required: ['title', 'description', 'protocol_type', 'max_rounds'],
         properties: {
           title: { type: 'string', minLength: 3, maxLength: 160 },
-          description: { type: 'string', minLength: 10, maxLength: 12000 },
+          description: { type: 'string', minLength: 3, maxLength: 8000 },
           protocol_type: { type: 'string', enum: ['debate', 'persuasion'] },
           persuader_party: { type: ['string', 'null'], enum: ['party_a', 'party_b', null] },
-          max_rounds: { type: 'integer', minimum: 3, maximum: 3 },
+          max_rounds: {
+            type: 'integer',
+            minimum: 3,
+            maximum: 10,
+            default: 3,
+            description:
+              'One statement per party per round; opening, intermediate rebuttals, then closing.',
+          },
+          resolution_mode: {
+            type: 'string',
+            enum: ['record_only', 'judge'],
+            default: 'record_only',
+            description:
+              'Judge requires a configured provider and sends only shared context and transcript for advisory assessment.',
+          },
           deadline_at: { type: ['string', 'null'], format: 'date-time' },
           turn_timeout_seconds: { type: ['integer', 'null'], minimum: 60 },
         },
@@ -275,6 +289,37 @@ export const openapiDocument = {
         summary: 'Accept a valid invitation as party B',
         security: humanSession,
         responses: ok,
+      },
+    },
+    '/conflicts/{id}/settings': {
+      put: {
+        tags: ['Conflicts'],
+        summary:
+          'Owner updates round count, shared context and completion mode before starting; resets both parties readiness',
+        parameters: conflictId,
+        security: humanSession,
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['max_rounds', 'description', 'resolution_mode'],
+                properties: {
+                  max_rounds: { type: 'integer', minimum: 3, maximum: 10 },
+                  description: { type: 'string', minLength: 3, maxLength: 8000 },
+                  resolution_mode: { type: 'string', enum: ['record_only', 'judge'] },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          ...ok,
+          '403': { description: 'Only the owner can edit' },
+          '409': { description: 'Rules are locked after starting' },
+          '503': { description: 'Requested Judge provider is unavailable' },
+        },
       },
     },
     '/conflicts/{id}/ready': {

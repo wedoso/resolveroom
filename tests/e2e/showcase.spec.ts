@@ -72,6 +72,7 @@ test('two online Runners complete a server-triggered debate while the browser ob
           'Balance participation, travel time, budget, and a decision the whole team can support.',
         protocol_type: 'debate',
         max_rounds: 3,
+        resolution_mode: 'judge',
       },
     }),
   );

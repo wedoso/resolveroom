@@ -1,11 +1,11 @@
 {
-  "version": "0.1.6",
+  "version": "0.1.7",
   "bootstrap": {
     "path": "/agent/bootstrap.mjs",
     "sha256": "26f663b775e693e3665998f47af6cc7fbc1de1ad09a0d95f509dce97b789b9a8"
   },
   "bundle": {
     "path": "/agent/resolveroom.mjs",
-    "sha256": "ce09c0f927348a293b94bfb6a9c16fa121e78da275a01bfa661208c3f4ab9ca0"
+    "sha256": "f7cdcec71b3e18bbfc950b9f2522bd592ac62ed3b8f374ea2380edfd8559860b"
   }
 }

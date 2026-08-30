@@ -9,7 +9,7 @@ import type {
   PartyRole,
   PrivateBriefContent,
 } from '@/domain/types';
-import { privateBriefSchema } from '@/domain/types';
+import { privateBriefSchema, conflictSettingsSchema, roundsSchema } from '@/domain/types';
 import { protocolFor, type ProtocolSnapshot } from '@/protocol/engine';
 import type { Database } from '@/persistence/database';
 import { NotificationService } from '@/notifications/service';
@@ -30,6 +30,10 @@ export class ConflictService {
     private readonly notifications = new NotificationService(db),
     private readonly judgeEnabled = true,
   ) {}
+
+  usesJudge(conflict: Conflict): boolean {
+    return this.judgeEnabled && conflict.resolutionMode === 'judge';
+  }
 
   private async resolveWithoutJudge(conflict: Conflict, reason: string): Promise<Conflict> {
     const timestamp = now();
@@ -67,7 +71,7 @@ export class ConflictService {
   async completeWithoutJudge(conflictId: string, userId: string) {
     return this.serialize(conflictId, async () => {
       const { conflict } = await this.requireParticipant(conflictId, userId);
-      if (this.judgeEnabled)
+      if (this.usesJudge(conflict))
         throw new DomainError('INVALID_STATE', 'This deployment uses the Judge workflow.', 409);
       if (conflict.status !== 'judging')
         throw new DomainError('INVALID_STATE', 'This conflict is not awaiting completion.', 409);
@@ -102,8 +106,16 @@ export class ConflictService {
       deadline_at?: string | null;
       turn_timeout_seconds?: number | null;
       max_rounds: number;
+      resolution_mode?: 'record_only' | 'judge';
     },
   ): Promise<{ conflict: Conflict; parties: ConflictParty[] }> {
+    roundsSchema.parse(input.max_rounds);
+    if (input.resolution_mode === 'judge' && !this.judgeEnabled)
+      throw new DomainError(
+        'JUDGE_UNAVAILABLE',
+        'AI Judge is not configured. Choose record only.',
+        503,
+      );
     const user = await this.db.getUser(userId);
     if (!user) throw new DomainError('UNAUTHORIZED', 'Sign in is required.', 401);
     const timestamp = now();
@@ -119,6 +131,7 @@ export class ConflictService {
       currentRound: 0,
       firstSpeakerPartyId: null,
       maxRounds: input.max_rounds,
+      resolutionMode: input.resolution_mode ?? 'record_only',
       deadlineAt: input.deadline_at ?? null,
       turnTimeoutSeconds: input.turn_timeout_seconds ?? null,
       version: 1,
@@ -188,6 +201,61 @@ export class ConflictService {
     if (value.conflict.createdByUserId !== userId)
       throw new DomainError('FORBIDDEN', 'Only the conflict owner can perform this action.', 403);
     return value;
+  }
+
+  async updateSettings(conflictId: string, userId: string, input: unknown) {
+    const parsed = conflictSettingsSchema.safeParse(input);
+    if (!parsed.success)
+      throw new DomainError(
+        'VALIDATION_ERROR',
+        parsed.error.issues[0]?.message ?? 'Invalid settings.',
+        422,
+      );
+    return this.serialize(conflictId, async () => {
+      const { conflict, party, parties } = await this.requireOwner(conflictId, userId);
+      if (!['draft', 'inviting', 'briefing'].includes(conflict.status))
+        throw new DomainError(
+          'INVALID_STATE',
+          'Round count, shared context and completion mode are locked after the exchange starts.',
+          409,
+        );
+      if (parsed.data.resolution_mode === 'judge' && !this.judgeEnabled)
+        throw new DomainError(
+          'JUDGE_UNAVAILABLE',
+          'AI Judge is not configured. Choose record only.',
+          503,
+        );
+      const { max_rounds, description, resolution_mode } = parsed.data;
+      if (
+        max_rounds === conflict.maxRounds &&
+        description === conflict.description &&
+        resolution_mode === conflict.resolutionMode
+      )
+        return conflict;
+      // A changed agreement must be acknowledged by both people before starting.
+      for (const participant of parties)
+        await this.db.updateParty({ ...participant, ready: false });
+      const updated = {
+        ...conflict,
+        maxRounds: max_rounds,
+        description,
+        resolutionMode: resolution_mode,
+        updatedAt: now(),
+        version: conflict.version + 1,
+      };
+      await this.db.updateConflict(updated);
+      await this.db.appendEvent({
+        conflictId,
+        eventType: 'conflict_settings_updated',
+        actorType: 'user',
+        actorId: userId,
+        partyId: party.id,
+        partyRole: party.role,
+        visibility: 'case',
+        payload: { max_rounds, description, resolution_mode, readiness_reset: true },
+      });
+      return updated;
+    });
   }
 
   async createInvite(conflictId: string, userId: string) {
@@ -432,17 +500,17 @@ export class ConflictService {
     events: ConflictEvent[],
   ): Promise<ProtocolSnapshot> {
     const first = parties.find((p) => p.id === conflict.firstSpeakerPartyId)?.role ?? 'party_a';
-    const phaseIndex = Math.max(
-      0,
-      ['opening', 'rebuttal', 'closing'].indexOf(conflict.currentPhase ?? 'opening'),
-    );
+    const phaseIndex = Math.max(0, conflict.currentRound - 1);
     const lastPhase = events.findLastIndex((e) => e.eventType === 'phase_started');
     const primary = events
       .slice(lastPhase + 1)
       .filter((e) =>
-        ['argument_submitted', 'rebuttal_submitted', 'closing_statement_submitted'].includes(
-          e.eventType,
-        ),
+        [
+          'argument_submitted',
+          'rebuttal_submitted',
+          'closing_statement_submitted',
+          'turn_skipped',
+        ].includes(e.eventType),
       ).length;
     const conceded = events.findLast((e) => e.eventType === 'party_conceded')?.partyRole ?? null;
     return {
@@ -450,6 +518,7 @@ export class ConflictService {
       status: conflict.status,
       phase: conflict.currentPhase ?? 'opening',
       phaseIndex,
+      maxRounds: conflict.maxRounds,
       turnIndex: Math.min(primary, 1),
       firstSpeaker: first,
       persuaderParty: conflict.persuaderParty,
@@ -515,7 +584,7 @@ export class ConflictService {
           payload: { phase: transition.state.phase, round: transition.state.phaseIndex + 1 },
         });
       if (transition.completed) {
-        if (this.judgeEnabled) {
+        if (this.usesJudge(conflict)) {
           await this.db.appendEvent({
             conflictId,
             eventType: 'judging_started',
@@ -558,7 +627,7 @@ export class ConflictService {
         event: appended.event,
         duplicate: false,
         conflict: updated,
-        needsJudging: transition.completed && this.judgeEnabled,
+        needsJudging: transition.completed && this.usesJudge(conflict),
       };
     });
   }
@@ -641,7 +710,7 @@ export class ConflictService {
         payload: { action_type: 'concede', content: '' },
       });
       await this.db.updateConflict(updated);
-      if (this.judgeEnabled) {
+      if (this.usesJudge(conflict)) {
         await this.db.appendEvent({
           conflictId,
           eventType: 'judging_started',
@@ -743,7 +812,7 @@ export class ConflictService {
           payload: { phase: transition.state.phase, round: transition.state.phaseIndex + 1 },
         });
       if (transition.completed) {
-        if (this.judgeEnabled)
+        if (this.usesJudge(conflict))
           await this.db.appendEvent({
             conflictId,
             eventType: 'judging_started',
@@ -756,7 +825,7 @@ export class ConflictService {
           });
         else updated = await this.resolveWithoutJudge(updated, 'protocol_complete_after_timeout');
       }
-      return { changed: true, needsJudging: transition.completed && this.judgeEnabled };
+      return { changed: true, needsJudging: transition.completed && this.usesJudge(conflict) };
     });
   }
   async cancel(conflictId: string, userId: string) {

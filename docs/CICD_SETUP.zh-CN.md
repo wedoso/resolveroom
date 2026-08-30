@@ -75,7 +75,7 @@ GitHub 仓库 → **Settings → Environments → New environment**，名称必�
 | `CLOUDFLARE_ACCOUNT_ID` | Cloudflare 32 位 Account ID |
 | `CLOUDFLARE_D1_DATABASE_ID` | Cloudflare 返回的完整 resolveroom D1 database ID |
 | `PUBLIC_APP_URL` | 最终 HTTPS origin，不带尾部斜杠 |
-| `JUDGE_PROVIDER` | 未配置外部 LLM 时填 `disabled`；配置完成后改为 `llm` |
+| `JUDGE_PROVIDER` | `disabled`；使用 Cloudflare 每日免费额度填 `workers_ai`；自备外部 Responses API 填 `llm` |
 | `EMAIL_PROVIDER` | 初次部署填 `console` |
 
 在 **Environment secrets** 添加：
@@ -89,6 +89,8 @@ GitHub 仓库 → **Settings → Environments → New environment**，名称必�
 | `EMAIL_API_URL` + `EMAIL_API_KEY` + `EMAIL_FROM` | 仅 Email 设为 `http` 时必需 |
 
 GitHub OAuth 的 secret 名故意带 `RESOLVEROOM_` 前缀，避免和 Actions 自带的 `GITHUB_TOKEN` 混淆；部署时会映射回 Worker 所需名称。
+
+使用 `workers_ai` 时无需新增 Judge secrets。CI 自动添加 `AI` binding，模型固定为 `@cf/meta/llama-3.3-70b-instruct-fp8-fast`。额度和开启步骤见 [AI Judge 配置](JUDGE_SETUP.zh-CN.md)。房间仍需明确选择 AI Judge 模式；已有记录不会自动外发。
 
 流水线把这张表视为受管 Secret 清单：有值的会通过 stdin 更新，没有值的会从 Worker 删除，避免关闭 provider 后遗留旧凭证。Secret 值不会写入文件或命令参数。
 

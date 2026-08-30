@@ -1,10 +1,14 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   judgeInputFromEvents,
   validateVerdict,
   type JudgeInput,
   type JudgeProvider,
   MockJudgeProvider,
+  WorkersAIJudgeProvider,
+  LLMJudgeProvider,
+  judgeMessages,
+  workersAIJudgeModel,
 } from '@/judge/providers';
 import { JudgeService } from '@/judge/service';
 import { MemoryDatabase } from '@/persistence/memory';
@@ -37,6 +41,87 @@ const valid = {
   unresolvedQuestions: ['Cost?'],
   citedEventIds: ['evt_valid'],
 };
+
+describe('external Judge contracts', () => {
+  afterEach(() => vi.unstubAllGlobals());
+  it.each([false, true])(
+    'accepts Workers AI structured output (text=%s) and supplies schema and deadline',
+    async (asText) => {
+      const run = vi.fn(async () => ({ response: asText ? JSON.stringify(valid) : valid }));
+      const value = await new WorkersAIJudgeProvider({ run } as unknown as Pick<
+        Ai,
+        'run'
+      >).evaluate(input);
+      expect(validateVerdict(value, input)).toEqual(valid);
+      const [model, body, options] = (run.mock.calls as unknown as [string, any, any][])[0];
+      expect(model).toBe(workersAIJudgeModel);
+      expect(body.response_format.type).toBe('json_schema');
+      expect(body.response_format.json_schema.required).toContain('winner');
+      expect(body.max_tokens).toBe(2400);
+      expect(options.signal).toBeInstanceOf(AbortSignal);
+      expect(body.messages[0].content).toContain('untrusted case DATA');
+    },
+  );
+  it('sends the protocol schema to the existing external Responses endpoint', async () => {
+    const fetcher = vi.fn(async () => Response.json({ output_text: JSON.stringify(valid) }));
+    vi.stubGlobal('fetch', fetcher);
+    const result = await new LLMJudgeProvider(
+      'https://judge.example/responses',
+      'test-secret',
+      'test-model',
+    ).evaluate(input);
+    expect(validateVerdict(result, input)).toEqual(valid);
+    const init = (fetcher.mock.calls as unknown as [string, RequestInit][])[0][1];
+    const request = JSON.parse(String(init.body));
+    expect(request.text.format.schema.required).toContain('citedEventIds');
+    expect(request.input[0].content).toContain('neutral ResolveRoom Judge');
+  });
+  it('rejects oversized case records without silently truncating either side', () => {
+    expect(() => judgeMessages({ ...input, description: 'x'.repeat(240_001) })).toThrow(
+      /context budget/,
+    );
+  });
+  it('does not invent a verdict when Workers AI returns no usable response', async () => {
+    const run = vi.fn(async () => ({}));
+    await expect(
+      new WorkersAIJudgeProvider({ run } as unknown as Pick<Ai, 'run'>).evaluate(input),
+    ).rejects.toThrow(/no structured/);
+  });
+  it('keeps quota/provider errors recoverable without disclosing upstream text', async () => {
+    const db = await judgingDb();
+    const run = vi.fn(async () => {
+      throw new Error('quota exceeded UPSTREAM_PRIVATE_TEXT');
+    });
+    const provider = new WorkersAIJudgeProvider({ run } as unknown as Pick<Ai, 'run'>);
+    await expect(new JudgeService(db, provider).run(input.conflictId)).rejects.toThrow(
+      /after retry/,
+    );
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(await db.getVerdict(input.conflictId)).toBeNull();
+    expect((await db.getConflict(input.conflictId))?.status).toBe('judging');
+  });
+  it('identifies the persuasion target correctly when Party B is the persuader', async () => {
+    const verdict = await new MockJudgeProvider().evaluate({
+      ...input,
+      protocolType: 'persuasion',
+      persuaderParty: 'party_b',
+      concededBy: 'party_a',
+    });
+    expect(verdict).toMatchObject({ outcome: 'target_conceded' });
+  });
+  it('does not send record-only cases to any provider', async () => {
+    const db = await judgingDb();
+    await db.updateConflict({
+      ...(await db.getConflict(input.conflictId))!,
+      resolutionMode: 'record_only',
+    });
+    const evaluate = vi.fn();
+    await expect(
+      new JudgeService(db, { name: 'spy', evaluate }).run(input.conflictId),
+    ).rejects.toThrow(/does not authorize/);
+    expect(evaluate).not.toHaveBeenCalled();
+  });
+});
 
 describe('judge validation', () => {
   it('accepts a valid structured verdict', () =>
@@ -74,6 +159,7 @@ async function judgingDb() {
     currentRound: 3,
     firstSpeakerPartyId: 'pty_a',
     maxRounds: 3,
+    resolutionMode: 'judge',
     deadlineAt: null,
     turnTimeoutSeconds: null,
     version: 1,
@@ -115,6 +201,28 @@ async function judgingDb() {
 }
 
 describe('JudgeService retries', () => {
+  it('finishes a partially persisted assessment without repeating inference or verdict events', async () => {
+    const db = await judgingDb();
+    const evaluate = vi.fn((value: JudgeInput) => new MockJudgeProvider().evaluate(value));
+    const service = new JudgeService(db, { name: 'mock', evaluate });
+    const update = vi
+      .spyOn(db, 'updateConflict')
+      .mockRejectedValueOnce(new Error('D1 unavailable'));
+    await expect(service.run(input.conflictId)).rejects.toThrow('D1 unavailable');
+    expect(evaluate).toHaveBeenCalledTimes(1);
+    expect(await db.getVerdict(input.conflictId)).not.toBeNull();
+    expect((await db.getConflict(input.conflictId))?.status).toBe('judging');
+    const result = await service.run(input.conflictId);
+    expect(result.verdict.protocolType).toBe('debate');
+    expect(evaluate).toHaveBeenCalledTimes(1);
+    expect((await db.getConflict(input.conflictId))?.status).toBe('resolved');
+    expect(
+      (await db.listEvents(input.conflictId)).filter(
+        (event) => event.eventType === 'verdict_issued',
+      ),
+    ).toHaveLength(1);
+    update.mockRestore();
+  });
   it('retries once after invalid output and persists the valid retry', async () => {
     const db = await judgingDb();
     let calls = 0;

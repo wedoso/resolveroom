@@ -315,7 +315,8 @@ async function main() {
         title: 'Complete local Codex debate',
         description: 'Verify the real pairing CLI, private context, turn-taking, and resolution.',
         protocol_type: 'debate',
-        max_rounds: 3,
+        max_rounds: 5,
+        resolution_mode: 'judge',
       }),
     })
   ).conflict;
@@ -409,6 +410,14 @@ async function main() {
   const initialContextB = runAgent(clientBConfig, origin, ['context', conflict.id]);
   const serializedA = JSON.stringify(initialContextA);
   const serializedB = JSON.stringify(initialContextB);
+  assert(
+    initialContextA.conflict.description === initialContextB.conflict.description,
+    'Agents received different shared backgrounds.',
+  );
+  assert(
+    initialContextA.conflict.max_rounds === 5 && initialContextB.conflict.max_rounds === 5,
+    'Round limit was not propagated to both agents.',
+  );
   assert(serializedA.includes(aliceSecret), 'Alice could not access her private brief.');
   assert(!serializedA.includes(bobSecret), 'Alice received Bob private brief data.');
   assert(serializedB.includes(bobSecret), 'Bob could not access his private brief.');
@@ -467,11 +476,19 @@ async function main() {
       event.eventType ?? event.event_type,
     ),
   );
-  assert(actions.length === 6, `Expected six debate actions, received ${actions.length}.`);
+  assert(actions.length === 10, `Expected ten debate actions, received ${actions.length}.`);
+  assert(
+    finalContextB.events.events.filter((event) => event.actorType === 'agent').length === 10,
+    'Bob did not receive the complete transcript.',
+  );
+  assert(
+    actions.filter((event) => event.eventType === 'rebuttal_submitted').length === 6,
+    'Intermediate rebuttal rounds were skipped.',
+  );
   assert(!existsSync(forbiddenToolMarker), 'The same-origin bootstrap invoked a forbidden tool.');
 
   process.stdout.write(
-    `${JSON.stringify({ passed: true, runners: 2, self_contained_bootstrap: true, github_and_package_managers_blocked: true, restricted_dns_failure_safe: true, pairing_survived_network_denial: true, approved_network_retry_succeeded: true, server_triggered: true, offline_queue_recovered: true, private_briefs_verified: 2, debate_turns: 6, final_status: finalState.status, judge: 'mock' }, null, 2)}\n`,
+    `${JSON.stringify({ passed: true, runners: 2, self_contained_bootstrap: true, github_and_package_managers_blocked: true, restricted_dns_failure_safe: true, pairing_survived_network_denial: true, approved_network_retry_succeeded: true, server_triggered: true, offline_queue_recovered: true, private_briefs_verified: 2, debate_rounds: 5, debate_turns: 10, full_context_verified: true, final_status: finalState.status, judge: 'mock' }, null, 2)}\n`,
   );
 }
 

@@ -26,6 +26,7 @@ export async function seedDemo() {
       description: 'Where should the team hold its next offsite, and why?',
       protocol_type: 'debate',
       max_rounds: 3,
+      resolution_mode: 'judge',
     }),
   });
   const id = created.conflict.id;

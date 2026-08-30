@@ -39,7 +39,7 @@ type AppEnv = { Variables: { requestId: string; identity?: Identity } };
 type Options = {
   allowDevelopmentAuth?: boolean;
   judgeEnabled?: boolean;
-  judgeMode?: 'disabled' | 'mock' | 'llm';
+  judgeMode?: 'disabled' | 'mock' | 'llm' | 'workers_ai';
   judgeProvider?: JudgeProvider;
   appUrl?: string;
   secureCookies?: boolean;
@@ -477,7 +477,7 @@ export function createApi(db: Database, options: Options = {}) {
           your_party: yours.role,
           opponent: { display_name: opponent.displayName, joined: Boolean(opponent.userId) },
           current_turn: current,
-          judge_available: judgeEnabled,
+          judge_available: conflicts.usesJudge(conflict),
         };
       }),
     );
@@ -500,7 +500,9 @@ export function createApi(db: Database, options: Options = {}) {
       ...publicConflict(conflict),
       your_party: party.role,
       current_turn: authoritativeTurn(conflict, parties, events),
-      judge_available: judgeEnabled,
+      judge_available: conflicts.usesJudge(conflict),
+      judge_provider_available: judgeEnabled,
+      is_owner: identity.kind === 'human' && conflict.createdByUserId === identity.user.id,
       parties: await Promise.all(
         parties.map(async (p) => ({
           id: p.id,
@@ -516,6 +518,11 @@ export function createApi(db: Database, options: Options = {}) {
       ),
     });
   });
+  app.put('/api/v1/conflicts/:id/settings', async (c) =>
+    c.json({
+      conflict: await conflicts.updateSettings(c.req.param('id'), human(c).id, await jsonBody(c)),
+    }),
+  );
   app.get('/api/v1/conflicts/:id/events', async (c) => {
     const identity = c.get('identity');
     if (!identity) throw new DomainError('UNAUTHORIZED', 'Authentication is required.', 401);
@@ -611,7 +618,9 @@ export function createApi(db: Database, options: Options = {}) {
   app.post('/api/v1/conflicts/:id/concede', async (c) => {
     await discardRequestBody(c);
     const value = await conflicts.concede(c.req.param('id'), human(c).id);
-    const verdict = judgeEnabled ? await judge.run(c.req.param('id')) : null;
+    const verdict = conflicts.usesJudge(value)
+      ? await attemptAutomaticJudge(judge, c.req.param('id'))
+      : null;
     return c.json({ conflict: value, verdict });
   });
 
@@ -959,6 +968,8 @@ export function createApi(db: Database, options: Options = {}) {
           title: conflict.title,
           status: conflict.status,
           phase: conflict.currentPhase,
+          round: conflict.currentRound,
+          max_rounds: conflict.maxRounds,
           your_party: party.role,
           your_turn: isYourTurn,
           allowed_actions: isYourTurn && turn ? turn.allowed_actions : [],
@@ -993,7 +1004,7 @@ export function createApi(db: Database, options: Options = {}) {
         duplicate: result.duplicate,
       }),
     );
-    if (judgeEnabled && result.needsJudging) await judge.run(c.req.param('id'));
+    if (judgeEnabled && result.needsJudging) await attemptAutomaticJudge(judge, c.req.param('id'));
     return c.json({
       event_id: result.event.id,
       sequence_number: result.event.sequenceNumber,
@@ -1003,12 +1014,18 @@ export function createApi(db: Database, options: Options = {}) {
   });
   app.post('/api/v1/conflicts/:id/judge', async (c) => {
     await discardRequestBody(c);
-    await conflicts.requireParticipant(c.req.param('id'), human(c).id);
+    const { conflict } = await conflicts.requireParticipant(c.req.param('id'), human(c).id);
     if (!judgeEnabled)
       throw new DomainError(
         'JUDGE_UNAVAILABLE',
         'Advisory assessment is not enabled for this ResolveRoom deployment.',
         503,
+      );
+    if (conflict.resolutionMode !== 'judge')
+      throw new DomainError(
+        'INVALID_STATE',
+        'This conflict was configured to complete without an AI verdict.',
+        409,
       );
     return c.json({ verdict: await judge.run(c.req.param('id')) });
   });
@@ -1141,6 +1158,7 @@ function publicConflict(c: any) {
     phase: c.currentPhase,
     round: c.currentRound,
     max_rounds: c.maxRounds,
+    resolution_mode: c.resolutionMode,
     deadline_at: c.deadlineAt,
     turn_timeout_seconds: c.turnTimeoutSeconds,
     created_at: c.createdAt,
@@ -1170,17 +1188,17 @@ function pairingView(pairing: AgentPairing) {
 export function authoritativeTurn(conflict: any, parties: ConflictParty[], events: any[]) {
   if (conflict.status !== 'active') return null;
   const first = parties.find((p) => p.id === conflict.firstSpeakerPartyId)?.role ?? 'party_a';
-  const phaseIndex = Math.max(
-    0,
-    ['opening', 'rebuttal', 'closing'].indexOf(conflict.currentPhase ?? 'opening'),
-  );
+  const phaseIndex = Math.max(0, conflict.currentRound - 1);
   const phaseStart = events.findLastIndex((e) => e.eventType === 'phase_started');
   const used = events
     .slice(phaseStart + 1)
     .filter((e) =>
-      ['argument_submitted', 'rebuttal_submitted', 'closing_statement_submitted'].includes(
-        e.eventType,
-      ),
+      [
+        'argument_submitted',
+        'rebuttal_submitted',
+        'closing_statement_submitted',
+        'turn_skipped',
+      ].includes(e.eventType),
     ).length;
   const firstThisPhase = phaseIndex % 2 === 0 ? first : first === 'party_a' ? 'party_b' : 'party_a';
   const role = used === 0 ? firstThisPhase : firstThisPhase === 'party_a' ? 'party_b' : 'party_a';
@@ -1209,6 +1227,16 @@ async function allAgentConflicts(db: Database, agentId: string) {
 async function runJudgeIfNeeded(db: Database, judge: JudgeService, id: string) {
   const conflict = await db.getConflict(id);
   if (conflict?.status === 'judging') await judge.run(id);
+}
+async function attemptAutomaticJudge(judge: JudgeService, id: string) {
+  try {
+    return await judge.run(id);
+  } catch (error) {
+    // The agent action/concession is already durable. A provider failure must not
+    // turn an accepted statement into an apparent failed submission.
+    if (error instanceof DomainError && error.code === 'JUDGE_FAILED') return null;
+    throw error;
+  }
 }
 async function establishSession(c: Context, db: Database, userId: string, secure: boolean) {
   const raw = secureToken('rr_session_');

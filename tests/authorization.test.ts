@@ -92,6 +92,84 @@ async function harness() {
 }
 
 describe('privacy and authorization', () => {
+  it('allows only the owner to edit setup, resets readiness, and locks after starting', async () => {
+    const h = await harness();
+    const settings = {
+      max_rounds: 5,
+      description: 'Shared constraints for both agents.',
+      resolution_mode: 'judge',
+    };
+    for (const [headers, status] of [
+      [h.bh, 403],
+      [h.mh, 404],
+      [{ Authorization: `Bearer ${h.ta.value}` }, 401],
+    ] as const) {
+      expect(
+        (
+          await h.request(`/api/v1/conflicts/${h.id}/settings`, {
+            method: 'PUT',
+            headers,
+            body: JSON.stringify(settings),
+          })
+        ).response.status,
+      ).toBe(status);
+    }
+    await h.request(`/api/v1/conflicts/${h.id}/ready`, {
+      method: 'POST',
+      headers: h.ah,
+      body: '{}',
+    });
+    const changed = await h.request(`/api/v1/conflicts/${h.id}/settings`, {
+      method: 'PUT',
+      headers: h.ah,
+      body: JSON.stringify(settings),
+    });
+    expect(changed.response.status).toBe(200);
+    expect(changed.body.conflict.maxRounds).toBe(5);
+    expect((await h.db.getParties(h.id)).every((party) => !party.ready)).toBe(true);
+    for (const headers of [
+      h.ah,
+      h.bh,
+      { Authorization: `Bearer ${h.ta.value}` },
+      { Authorization: `Bearer ${h.tb.value}` },
+    ]) {
+      const response = await h.request(`/api/v1/conflicts/${h.id}`, { headers });
+      expect(response.body.description).toBe(settings.description);
+      expect(response.body.max_rounds).toBe(5);
+      expect(JSON.stringify(response.body)).not.toContain('SECRET_');
+    }
+    for (const headers of [h.ah, h.bh])
+      await h.request(`/api/v1/conflicts/${h.id}/ready`, { method: 'POST', headers, body: '{}' });
+    expect(
+      (
+        await h.request(`/api/v1/conflicts/${h.id}/settings`, {
+          method: 'PUT',
+          headers: h.ah,
+          body: JSON.stringify({ ...settings, max_rounds: 10 }),
+        })
+      ).response.status,
+    ).toBe(409);
+  });
+  it.each([2, 11, 4.5, '5'])(
+    'rejects invalid round count %s at the HTTP boundary',
+    async (rounds) => {
+      const h = await harness();
+      expect(
+        (
+          await h.request('/api/v1/conflicts', {
+            method: 'POST',
+            headers: h.ah,
+            body: JSON.stringify({
+              title: 'Invalid rounds',
+              description: 'Shared background',
+              protocol_type: 'debate',
+              max_rounds: rounds,
+            }),
+          })
+        ).response.status,
+      ).toBe(422);
+    },
+  );
   it('never returns an opponent brief even when a party_id query is supplied', async () => {
     const h = await harness();
     const a = await h.request(`/api/v1/conflicts/${h.id}/brief?party_id=party_b`, {

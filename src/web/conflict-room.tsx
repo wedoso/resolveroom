@@ -46,7 +46,8 @@ type RoomData = {
 };
 export function ConflictRoomPage() {
   const { id } = useParams();
-  const [search] = useSearchParams();
+  const [search, setSearch] = useSearchParams();
+  const invitedOnCreate = useRef(false);
   const [data, setData] = useState<RoomData | null>(null);
   const [error, setError] = useState('');
   const [tab, setTab] = useState('live');
@@ -119,14 +120,23 @@ export function ConflictRoomPage() {
       socket?.close();
     };
   }, [id, load]);
-  const createInvite = async () => {
+  const createInvite = useCallback(async () => {
     const value = await api<any>(`/conflicts/${id}/invite`, { method: 'POST', body: '{}' });
     setInvite(value.invite);
-  };
+  }, [id]);
   useEffect(() => {
-    if (search.get('created') === '1' && data?.conflict.your_party === 'party_a' && !invite)
-      void createInvite();
-  }, [data?.conflict.your_party]);
+    if (
+      search.get('created') === '1' &&
+      data?.conflict.your_party === 'party_a' &&
+      !invitedOnCreate.current
+    ) {
+      invitedOnCreate.current = true;
+      const next = new URLSearchParams(search);
+      next.delete('created');
+      setSearch(next, { replace: true });
+      void createInvite().catch(() => setError('Could not create the invitation. Please retry.'));
+    }
+  }, [search, setSearch, data?.conflict.your_party, createInvite]);
   if (!data && !error)
     return (
       <AppShell>
@@ -148,6 +158,14 @@ export function ConflictRoomPage() {
     );
   if (!data) return null;
   const c = data.conflict;
+  const sections = [
+    'live',
+    'transcript',
+    'shared context',
+    'private brief',
+    ...(c.judge_available ? ['verdict'] : []),
+    'settings',
+  ];
   const yours = c.parties.find((p: any) => p.role === c.your_party);
   const opponent = c.parties.find((p: any) => p.role !== c.your_party);
   const mutate = async (action: string) => {
@@ -216,77 +234,128 @@ export function ConflictRoomPage() {
         <ParticipantStrip parties={c.parties} />
         <ProtocolProgress phase={c.phase} status={c.status} judgeAvailable={c.judge_available} />
         <p className="protocol-explainer">
-          3 phases · 2 turns each · 6 total statements. After both closing statements,{' '}
+          Round {Math.max(1, c.round)} of {c.max_rounds} · {c.max_rounds * 2} total statements · one
+          statement per side each round. After both closing statements,{' '}
           {c.judge_available
             ? 'the advisory Judge evaluates the completed record.'
             : 'the conflict closes as a completed record without a verdict.'}
         </p>
         <div className="room-grid">
           <section className="record-column">
-            <div className="room-tabs" role="tablist" aria-label="Conflict sections">
-              {[
-                'live',
-                'transcript',
-                'private brief',
-                ...(c.judge_available ? ['verdict'] : []),
-                'settings',
-              ].map((value) => (
-                <button
-                  key={value}
-                  role="tab"
-                  aria-selected={tab === value}
-                  onClick={() => setTab(value)}
-                >
-                  {value}
-                </button>
-              ))}
-              <ConnectionState state={connection} />
-            </div>
-            {tab === 'live' || tab === 'transcript' ? (
-              <div ref={recordRef} className="record-pane">
-                <div className="record-title">
-                  <div>
-                    <h2>{tab === 'live' ? 'Live case record' : 'Complete transcript'}</h2>
-                    <p>Append-only · {data.events.length} authorized events</p>
-                  </div>
-                  {tab === 'live' && (
-                    <span className="live-label">
-                      <Radio />
-                      Following live
-                    </span>
-                  )}
-                </div>
-                {data.events.length ? (
-                  <TranscriptList events={data.events} />
-                ) : (
-                  <StatePanel title="The case record is waiting">
-                    <p>
-                      Events will appear here once both participants are ready and the agents begin.
-                    </p>
-                  </StatePanel>
-                )}
-                {newActivity && (
+            <div className="room-tab-bar">
+              <div className="room-tabs" role="tablist" aria-label="Conflict sections">
+                {sections.map((value, index) => (
                   <button
-                    className="new-activity"
-                    onClick={() => {
-                      setNewActivity(false);
-                      recordRef.current?.scrollTo({
-                        top: recordRef.current.scrollHeight,
-                        behavior: 'smooth',
-                      });
+                    key={value}
+                    id={`room-tab-${value.replaceAll(' ', '-')}`}
+                    role="tab"
+                    aria-selected={tab === value}
+                    aria-controls="room-tab-panel"
+                    tabIndex={tab === value ? 0 : -1}
+                    onClick={() => setTab(value)}
+                    onKeyDown={(event) => {
+                      const next =
+                        event.key === 'ArrowRight'
+                          ? (index + 1) % sections.length
+                          : event.key === 'ArrowLeft'
+                            ? (index + sections.length - 1) % sections.length
+                            : event.key === 'Home'
+                              ? 0
+                              : event.key === 'End'
+                                ? sections.length - 1
+                                : null;
+                      if (next === null) return;
+                      event.preventDefault();
+                      setTab(sections[next]);
+                      event.currentTarget.parentElement?.querySelectorAll('button')[next]?.focus();
                     }}
                   >
-                    New activity ↓
+                    {value}
                   </button>
-                )}
+                ))}
               </div>
-            ) : tab === 'private brief' ? (
-              <BriefPanel id={id!} brief={data.brief} onSaved={load} />
-            ) : tab === 'verdict' ? (
-              <VerdictPanel record={data.verdict} status={c.status} />
-            ) : (
-              <SettingsPanel id={id!} data={data} load={load} />
-            )}
+              <ConnectionState state={connection} />
+            </div>
+            <div
+              id="room-tab-panel"
+              role="tabpanel"
+              aria-labelledby={`room-tab-${tab.replaceAll(' ', '-')}`}
+            >
+              {tab === 'live' || tab === 'transcript' ? (
+                <div ref={recordRef} className="record-pane">
+                  <div className="record-title">
+                    <div>
+                      <h2>{tab === 'live' ? 'Live case record' : 'Complete transcript'}</h2>
+                      <p>Append-only · {data.events.length} authorized events</p>
+                    </div>
+                    {tab === 'live' && (
+                      <span className="live-label">
+                        <Radio />
+                        Following live
+                      </span>
+                    )}
+                  </div>
+                  {data.events.length ? (
+                    <TranscriptList events={data.events} />
+                  ) : (
+                    <StatePanel title="The case record is waiting">
+                      <p>
+                        Events will appear here once both participants are ready and the agents
+                        begin.
+                      </p>
+                    </StatePanel>
+                  )}
+                  {newActivity && (
+                    <button
+                      className="new-activity"
+                      onClick={() => {
+                        setNewActivity(false);
+                        recordRef.current?.scrollTo({
+                          top: recordRef.current.scrollHeight,
+                          behavior: 'smooth',
+                        });
+                      }}
+                    >
+                      New activity ↓
+                    </button>
+                  )}
+                </div>
+              ) : tab === 'shared context' ? (
+                <section className="brief-panel">
+                  <div className="record-title">
+                    <div>
+                      <h2>Shared context</h2>
+                      <p>
+                        The same background and complete transcript are available to both agents on
+                        every turn.
+                      </p>
+                    </div>
+                  </div>
+                  <h3>{c.title}</h3>
+                  <p className="shared-context-text">{c.description}</p>
+                  <div className="privacy-note">
+                    <FileText />
+                    <p>
+                      Opening → {c.max_rounds - 2} rebuttal{' '}
+                      {c.max_rounds === 3 ? 'round' : 'rounds'} → closing. Each agent also receives
+                      the current round, allowed actions, and only its own private brief. Use the
+                      Transcript tab to read all shared statements.
+                    </p>
+                  </div>
+                  <p className="protocol-explainer">
+                    {c.resolution_mode === 'judge'
+                      ? 'AI Judge mode: the shared question and transcript are sent to the configured LLM for an advisory assessment. Private briefs are excluded.'
+                      : 'Record-only mode: after closing, the conflict is marked complete without declaring a winner.'}
+                  </p>
+                </section>
+              ) : tab === 'private brief' ? (
+                <BriefPanel id={id!} brief={data.brief} onSaved={load} />
+              ) : tab === 'verdict' ? (
+                <VerdictPanel record={data.verdict} status={c.status} id={id!} load={load} />
+              ) : (
+                <SettingsPanel id={id!} data={data} load={load} />
+              )}
+            </div>
           </section>
           <aside className="context-rail">
             <TurnCard conflict={c} id={id!} load={load} />
@@ -974,7 +1043,31 @@ function BriefPanel({
   );
 }
 
-function VerdictPanel({ record, status }: { record: any; status: string }) {
+function VerdictPanel({
+  record,
+  status,
+  id,
+  load,
+}: {
+  record: any;
+  status: string;
+  id: string;
+  load: () => Promise<void>;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const retry = async () => {
+    setBusy(true);
+    setError('');
+    try {
+      await api(`/conflicts/${id}/judge`, { method: 'POST', body: '{}' });
+      await load();
+    } catch (value) {
+      setError(value instanceof Error ? value.message : 'Assessment unavailable. Try later.');
+    } finally {
+      setBusy(false);
+    }
+  };
   if (!record)
     return (
       <div className="verdict-empty">
@@ -987,9 +1080,19 @@ function VerdictPanel({ record, status }: { record: any; status: string }) {
         </h2>
         <p>
           {status === 'judging'
-            ? 'The structured case record is being validated. You can close this page and return later.'
+            ? 'The exchange is finished; the assessment is pending. If the provider is unavailable or its free quota is exhausted, the record stays safe here. You can retry later.'
             : 'The Judge begins automatically after the protocol completes or a party concedes.'}
         </p>
+        {status === 'judging' && (
+          <button className="button secondary" onClick={() => void retry()} disabled={busy}>
+            {busy ? 'Requesting assessment…' : 'Retry assessment'}
+          </button>
+        )}
+        {error && (
+          <p className="form-error" role="alert">
+            {error}
+          </p>
+        )}
       </div>
     );
   const v = record.verdict;
@@ -1065,6 +1168,34 @@ function SettingsPanel({
   load: () => Promise<void>;
 }) {
   const [creating, setCreating] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState('');
+  const [settingsError, setSettingsError] = useState('');
+  const editable =
+    data.conflict.is_owner && ['draft', 'inviting', 'briefing'].includes(data.conflict.status);
+  const save = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    setSaving(true);
+    setSettingsError('');
+    setMessage('');
+    try {
+      await api(`/conflicts/${id}/settings`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          max_rounds: Number(form.get('max_rounds')),
+          description: form.get('description'),
+          resolution_mode: form.get('resolution_mode'),
+        }),
+      });
+      await load();
+      setMessage('Rules saved. Both participants must confirm readiness again.');
+    } catch (value) {
+      setSettingsError(value instanceof Error ? value.message : 'Could not save rules.');
+    } finally {
+      setSaving(false);
+    }
+  };
   const create = async () => {
     setCreating(true);
     const value = await api<any>(`/conflicts/${id}/share-links`, { method: 'POST', body: '{}' });
@@ -1080,6 +1211,85 @@ function SettingsPanel({
           <p>Observer access is always unlisted, read-only, and revocable.</p>
         </div>
       </div>
+      <section>
+        <h3>Exchange rules</h3>
+        <p>
+          {editable
+            ? 'Only the room owner can change these rules before the exchange starts. Changes reset readiness for both people.'
+            : 'Rules and shared context are locked after starting. Before starting, only the room owner can edit them.'}
+        </p>
+        <form
+          className="create-form"
+          key={JSON.stringify([
+            id,
+            data.conflict.max_rounds,
+            data.conflict.resolution_mode,
+            data.conflict.description,
+          ])}
+          onSubmit={(event) => void save(event)}
+        >
+          <label>
+            Number of rounds
+            <select
+              name="max_rounds"
+              defaultValue={data.conflict.max_rounds}
+              disabled={!editable || saving}
+            >
+              {Array.from({ length: 8 }, (_, i) => i + 3).map((value) => (
+                <option key={value} value={value}>
+                  {value} rounds · {value * 2} statements
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Shared context
+            <textarea
+              name="description"
+              defaultValue={data.conflict.description}
+              required
+              minLength={3}
+              maxLength={8000}
+              rows={5}
+              disabled={!editable || saving}
+            />
+            <small>
+              Visible to both participants and both agents. Never put private instructions here.
+            </small>
+          </label>
+          <label>
+            Completion mode
+            <select
+              name="resolution_mode"
+              defaultValue={data.conflict.resolution_mode}
+              disabled={!editable || saving}
+            >
+              <option value="record_only">Complete the record without a Judge</option>
+              {(data.conflict.judge_provider_available ||
+                data.conflict.resolution_mode === 'judge') && (
+                <option value="judge" disabled={!data.conflict.judge_provider_available}>
+                  AI Judge · advisory assessment
+                </option>
+              )}
+            </select>
+            <small>
+              AI Judge sends only shared context and the transcript to the configured LLM, never
+              private briefs.
+            </small>
+          </label>
+          {editable && (
+            <button className="button" disabled={saving}>
+              {saving ? 'Saving…' : 'Save exchange rules'}
+            </button>
+          )}
+          {message && <p role="status">{message}</p>}
+          {settingsError && (
+            <p role="alert" className="form-error">
+              {settingsError}
+            </p>
+          )}
+        </form>
+      </section>
       <section>
         <div className="settings-heading">
           <div>

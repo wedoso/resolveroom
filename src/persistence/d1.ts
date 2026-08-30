@@ -27,6 +27,7 @@ const conflictFrom = (r: any): Conflict => ({
   currentRound: r.current_round,
   firstSpeakerPartyId: r.first_speaker_party_id,
   maxRounds: r.max_rounds,
+  resolutionMode: r.resolution_mode,
   deadlineAt: r.deadline_at,
   turnTimeoutSeconds: r.turn_timeout_seconds,
   version: r.version,
@@ -215,7 +216,9 @@ export class D1Store implements Database {
   async createConflict(c: Conflict, ps: [ConflictParty, ConflictParty]) {
     await this.db.batch([
       this.db
-        .prepare('INSERT INTO conflicts VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+        .prepare(
+          'INSERT INTO conflicts (id,title,description,protocol_type,status,created_by_user_id,current_phase,current_round,first_speaker_party_id,max_rounds,deadline_at,turn_timeout_seconds,version,persuader_party,created_at,updated_at,resolved_at,resolution_mode) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+        )
         .bind(
           c.id,
           c.title,
@@ -234,6 +237,7 @@ export class D1Store implements Database {
           c.createdAt,
           c.updatedAt,
           c.resolvedAt,
+          c.resolutionMode,
         ),
       ...ps.map((p) =>
         this.db
@@ -260,7 +264,7 @@ export class D1Store implements Database {
   async updateConflict(c: Conflict) {
     await this.db
       .prepare(
-        'UPDATE conflicts SET title=?,description=?,status=?,current_phase=?,current_round=?,first_speaker_party_id=?,max_rounds=?,deadline_at=?,turn_timeout_seconds=?,version=?,updated_at=?,resolved_at=? WHERE id=?',
+        'UPDATE conflicts SET title=?,description=?,status=?,current_phase=?,current_round=?,first_speaker_party_id=?,max_rounds=?,deadline_at=?,turn_timeout_seconds=?,version=?,updated_at=?,resolved_at=?,resolution_mode=? WHERE id=?',
       )
       .bind(
         c.title,
@@ -275,6 +279,7 @@ export class D1Store implements Database {
         c.version,
         c.updatedAt,
         c.resolvedAt,
+        c.resolutionMode,
         c.id,
       )
       .run();

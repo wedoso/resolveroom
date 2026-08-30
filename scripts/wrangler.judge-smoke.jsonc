@@ -1,0 +1,7 @@
+// Test only: no production database, routes, or deployment. Uses real AI quota.
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "resolveroom-judge-smoke",
+  "compatibility_date": "2026-08-29",
+  "ai": { "binding": "AI", "remote": true },
+}

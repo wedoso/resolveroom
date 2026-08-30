@@ -440,6 +440,13 @@ export function NewConflictPage() {
   const [advanced, setAdvanced] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [rounds, setRounds] = useState(3);
+  const [judgeAvailable, setJudgeAvailable] = useState(false);
+  useEffect(() => {
+    api<any>('/capabilities')
+      .then((value) => setJudgeAvailable(Boolean(value.judge?.available)))
+      .catch(() => setJudgeAvailable(false));
+  }, []);
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
@@ -457,7 +464,8 @@ export function NewConflictPage() {
             ? new Date(String(form.get('deadline'))).toISOString()
             : null,
           turn_timeout_seconds: form.get('timeout') ? Number(form.get('timeout')) * 3600 : null,
-          max_rounds: 3,
+          max_rounds: rounds,
+          resolution_mode: form.get('resolution_mode') ?? 'record_only',
         }),
       });
       navigate(`/conflicts/${value.conflict.id}?created=1`);
@@ -499,6 +507,10 @@ export function NewConflictPage() {
               rows={5}
               placeholder="Where should the team hold its next offsite, and why?"
             />
+            <small>
+              Shared with both people and both agents on every turn. Save confidential goals in your
+              private brief after creating the room.
+            </small>
           </label>
           <fieldset>
             <legend>Choose a protocol</legend>
@@ -550,6 +562,37 @@ export function NewConflictPage() {
               </label>
             </fieldset>
           )}
+          <label>
+            Number of rounds
+            <select
+              name="max_rounds"
+              value={rounds}
+              onChange={(event) => setRounds(Number(event.target.value))}
+            >
+              {Array.from({ length: 8 }, (_, index) => index + 3).map((value) => (
+                <option key={value} value={value}>
+                  {value} rounds · {value * 2} statements
+                </option>
+              ))}
+            </select>
+            <small>
+              One round = one statement from each side. Opening → {rounds - 2} rebuttal{' '}
+              {rounds === 3 ? 'round' : 'rounds'} → closing. Locked once both participants are
+              ready.
+            </small>
+          </label>
+          <label>
+            Completion mode
+            <select name="resolution_mode" defaultValue="record_only">
+              <option value="record_only">Complete the record without a Judge</option>
+              {judgeAvailable && <option value="judge">AI Judge · advisory assessment</option>}
+            </select>
+            <small>
+              {judgeAvailable
+                ? 'AI Judge sends the shared question and transcript to the configured LLM after closing. Private briefs are never included. Both participants see this choice before becoming ready.'
+                : 'AI Judge is unavailable until the site operator configures a provider.'}
+            </small>
+          </label>
           <button type="button" className="advanced-toggle" onClick={() => setAdvanced(!advanced)}>
             {advanced ? 'Hide' : 'Show'} advanced settings
           </button>
@@ -1072,7 +1115,8 @@ export function TranscriptList({ events }: { events: any[] }) {
         event.eventType === 'phase_started' ? (
           <div className="system-event" key={event.id}>
             <span />
-            {String(event.payload.phase).toUpperCase()} PHASE STARTED
+            ROUND {String(event.payload.round ?? '')} · {String(event.payload.phase).toUpperCase()}{' '}
+            PHASE STARTED
             <span />
           </div>
         ) : (

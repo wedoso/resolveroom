@@ -33,6 +33,7 @@ export type ActorType = 'user' | 'agent' | 'system' | 'judge';
 
 export const conflictEventTypes = [
   'conflict_created',
+  'conflict_settings_updated',
   'party_invited',
   'party_joined',
   'agent_bound',
@@ -111,6 +112,7 @@ export interface Conflict {
   currentRound: number;
   firstSpeakerPartyId: string | null;
   maxRounds: number;
+  resolutionMode: 'record_only' | 'judge';
   deadlineAt: string | null;
   turnTimeoutSeconds: number | null;
   version: number;
@@ -261,6 +263,13 @@ export const agentActionSchema = z
   });
 export type AgentAction = z.infer<typeof agentActionSchema>;
 
+export const roundsSchema = z.number().int().min(3).max(10);
+export const conflictSettingsSchema = z.object({
+  max_rounds: roundsSchema,
+  description: z.string().trim().min(3).max(8_000),
+  resolution_mode: z.enum(['record_only', 'judge']),
+});
+
 export const createConflictSchema = z
   .object({
     title: z.string().trim().min(3).max(160),
@@ -269,7 +278,8 @@ export const createConflictSchema = z
     persuader_party: z.enum(partyRoles).nullable().optional(),
     deadline_at: z.iso.datetime().nullable().optional(),
     turn_timeout_seconds: z.number().int().min(60).max(604800).nullable().optional(),
-    max_rounds: z.literal(3).default(3),
+    max_rounds: roundsSchema.default(3),
+    resolution_mode: z.enum(['record_only', 'judge']).default('record_only'),
   })
   .superRefine((value, ctx) => {
     if (value.protocol_type === 'persuasion' && !value.persuader_party)

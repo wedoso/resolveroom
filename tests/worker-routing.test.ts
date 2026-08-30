@@ -18,6 +18,8 @@ describe('Worker conflict coordination routing', () => {
       `/api/v1/conflicts/${conflictId}/events`,
       `/api/v1/conflicts/${conflictId}/brief`,
       `/api/v1/conflicts/${conflictId}/actions`,
+      `/api/v1/conflicts/${conflictId}/settings`,
+      `/api/v1/conflicts/${conflictId}/judge`,
       `/api/v1/conflicts/${conflictId}/agent/pairings`,
       `/api/v1/conflicts/${conflictId}/share-links/link_1`,
     ];

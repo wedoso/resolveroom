@@ -1,7 +1,12 @@
 import { DurableObject } from 'cloudflare:workers';
 import { authoritativeTurn, createApi, type RunnerStatus } from '@/api/app';
 import { D1Store } from '@/persistence/d1';
-import { LLMJudgeProvider, MockJudgeProvider, type JudgeProvider } from '@/judge/providers';
+import {
+  LLMJudgeProvider,
+  MockJudgeProvider,
+  WorkersAIJudgeProvider,
+  type JudgeProvider,
+} from '@/judge/providers';
 import { sha256 } from '@/domain/security';
 import { ConflictService } from '@/services/conflicts';
 import { JudgeService } from '@/judge/service';
@@ -17,6 +22,7 @@ export interface Env {
   CONFLICT_ROOMS: DurableObjectNamespace;
   AGENT_RUNNERS: DurableObjectNamespace;
   ASSETS: Fetcher;
+  AI?: Ai;
   ENVIRONMENT: string;
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;
@@ -34,6 +40,7 @@ export interface Env {
 }
 
 function provider(env: Env): JudgeProvider {
+  if (env.JUDGE_PROVIDER === 'workers_ai' && env.AI) return new WorkersAIJudgeProvider(env.AI);
   if (env.JUDGE_PROVIDER === 'llm') {
     if (!env.JUDGE_API_URL || !env.JUDGE_API_KEY || !env.JUDGE_MODEL)
       throw new Error('JUDGE_PROVIDER=llm requires JUDGE_API_URL, JUDGE_API_KEY, and JUDGE_MODEL.');
@@ -45,13 +52,15 @@ function provider(env: Env): JudgeProvider {
 }
 
 const judgeEnabled = (env: Env) =>
-  env.JUDGE_PROVIDER === 'llm' ||
+  (env.JUDGE_PROVIDER === 'llm' &&
+    Boolean(env.JUDGE_API_URL && env.JUDGE_API_KEY && env.JUDGE_MODEL)) ||
+  (env.JUDGE_PROVIDER === 'workers_ai' && Boolean(env.AI)) ||
   (env.JUDGE_PROVIDER === 'mock' && env.ENVIRONMENT !== 'production');
 
 function apiOptions(env: Env) {
   const oauth: any = {};
-  const judgeMode: 'disabled' | 'mock' | 'llm' = judgeEnabled(env)
-    ? (env.JUDGE_PROVIDER as 'mock' | 'llm')
+  const judgeMode: 'disabled' | 'mock' | 'llm' | 'workers_ai' = judgeEnabled(env)
+    ? (env.JUDGE_PROVIDER as 'mock' | 'llm' | 'workers_ai')
     : 'disabled';
   if (env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET)
     oauth.google = { clientId: env.GOOGLE_CLIENT_ID, clientSecret: env.GOOGLE_CLIENT_SECRET };

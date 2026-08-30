@@ -3,6 +3,32 @@ import { DebateProtocol, PersuasionProtocol } from '@/protocol/engine';
 import { DomainError } from '@/domain/errors';
 
 describe('DebateProtocol', () => {
+  it.each([3, 4, 5, 10])(
+    'honors %i rounds, including alternating intermediate rebuttals',
+    (rounds) => {
+      const protocol = new DebateProtocol();
+      let state = protocol.create('party_b', null, rounds);
+      for (let round = 0; round < rounds; round += 1) {
+        expect(state.phaseIndex).toBe(round);
+        expect(state.phase).toBe(
+          round === 0 ? 'opening' : round === rounds - 1 ? 'closing' : 'rebuttal',
+        );
+        expect(protocol.getCurrentSpeaker(state)).toBe(round % 2 === 0 ? 'party_b' : 'party_a');
+        for (let turn = 0; turn < 2; turn += 1) {
+          const party = protocol.getCurrentSpeaker(state)!;
+          state = protocol.applyAction(
+            state,
+            party,
+            protocol.getAllowedActions(state, party)[0],
+          ).state;
+        }
+        expect(state.status).toBe(round === rounds - 1 ? 'judging' : 'active');
+      }
+    },
+  );
+  it.each([0, 2, 11, 3.5, NaN])('rejects invalid round count %s', (rounds) => {
+    expect(() => new DebateProtocol().create('party_a', null, rounds)).toThrow();
+  });
   it('uses the selected first speaker and alternates phase order', () => {
     const protocol = new DebateProtocol();
     let state = protocol.create('party_b');

@@ -258,7 +258,7 @@ describe('single-use Codex pairing', () => {
     expect(manifest.pairing).toMatchObject({ single_use: true, code_ttl_seconds: 600 });
     expect(manifest.cli).toMatchObject({
       distribution: 'resolveroom-origin',
-      version: '0.1.6',
+      version: '0.1.7',
       bootstrap_url: 'http://resolveroom.test/agent/bootstrap.mjs',
       bundle_url: 'http://resolveroom.test/agent/resolveroom.mjs',
     });

@@ -1,4 +1,5 @@
 import { DomainError } from '@/domain/errors';
+import { roundsSchema } from '@/domain/types';
 import type {
   AgentActionType,
   ConflictPhase,
@@ -12,6 +13,7 @@ export interface ProtocolSnapshot {
   status: ConflictStatus;
   phase: ConflictPhase;
   phaseIndex: number;
+  maxRounds: number;
   turnIndex: number;
   firstSpeaker: PartyRole;
   persuaderParty: PartyRole | null;
@@ -24,13 +26,17 @@ export interface ProtocolTransition {
   completed: boolean;
 }
 
-const phases: ConflictPhase[] = ['opening', 'rebuttal', 'closing'];
 const otherParty = (party: PartyRole): PartyRole => (party === 'party_a' ? 'party_b' : 'party_a');
 
 export class ConflictProtocol {
   constructor(readonly type: ProtocolType) {}
 
-  create(firstSpeaker: PartyRole, persuaderParty: PartyRole | null = null): ProtocolSnapshot {
+  create(
+    firstSpeaker: PartyRole,
+    persuaderParty: PartyRole | null = null,
+    maxRounds = 3,
+  ): ProtocolSnapshot {
+    roundsSchema.parse(maxRounds);
     if (this.type === 'persuasion' && !persuaderParty)
       throw new DomainError('VALIDATION_ERROR', 'Persuasion requires a persuader.', 422);
     return {
@@ -38,6 +44,7 @@ export class ConflictProtocol {
       status: 'active',
       phase: 'opening',
       phaseIndex: 0,
+      maxRounds,
       turnIndex: 0,
       firstSpeaker,
       persuaderParty,
@@ -105,11 +112,16 @@ export class ConflictProtocol {
       return { state: { ...state }, phaseChanged: false, completed: false };
     if (state.turnIndex === 0)
       return { state: { ...state, turnIndex: 1 }, phaseChanged: false, completed: false };
-    if (state.phaseIndex === phases.length - 1)
+    if (state.phaseIndex === state.maxRounds - 1)
       return { state: { ...state, status: 'judging' }, phaseChanged: false, completed: true };
     const phaseIndex = state.phaseIndex + 1;
     return {
-      state: { ...state, phaseIndex, phase: phases[phaseIndex], turnIndex: 0 },
+      state: {
+        ...state,
+        phaseIndex,
+        phase: phaseIndex === state.maxRounds - 1 ? 'closing' : 'rebuttal',
+        turnIndex: 0,
+      },
       phaseChanged: true,
       completed: false,
     };

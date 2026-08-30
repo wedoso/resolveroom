@@ -62,8 +62,8 @@ if (!googleConfigured && !githubConfigured) {
 }
 
 const judgeProvider = process.env.JUDGE_PROVIDER?.trim() || 'disabled';
-if (!['disabled', 'llm'].includes(judgeProvider)) {
-  fail('JUDGE_PROVIDER must be either disabled or llm.');
+if (!['disabled', 'llm', 'workers_ai'].includes(judgeProvider)) {
+  fail('JUDGE_PROVIDER must be disabled, llm, or workers_ai.');
 }
 if (judgeProvider === 'llm') {
   required('JUDGE_API_URL');
@@ -84,6 +84,7 @@ if (emailProvider === 'http') {
 const sourcePath = process.env.WRANGLER_SOURCE_CONFIG || 'wrangler.toml';
 const outputPath = process.env.WRANGLER_DEPLOY_CONFIG || 'wrangler.deploy.toml';
 let config = await readFile(sourcePath, 'utf8');
+if (judgeProvider === 'workers_ai') config += '\n[ai]\nbinding = "AI"\n';
 config = replaceOnce(
   config,
   'database_id = "REPLACE_WITH_PRODUCTION_D1_ID"',

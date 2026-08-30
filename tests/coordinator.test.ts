@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { MemoryDatabase } from '@/persistence/memory';
+import { authoritativeTurn } from '@/api/app';
 import { ConflictService } from '@/services/conflicts';
 import { opaqueId } from '@/domain/security';
 import type { Agent, User } from '@/domain/types';
@@ -48,6 +49,27 @@ async function setup(judgeEnabled = true) {
 }
 
 describe('ConflictService coordination', () => {
+  it('advances all timed-out turns through a five-round exchange', async () => {
+    const x = await setup(false);
+    await x.db.updateConflict({
+      ...(await x.db.getConflict(x.conflictId))!,
+      maxRounds: 5,
+      turnTimeoutSeconds: 60,
+    });
+    const parties = await x.db.getParties(x.conflictId);
+    for (let i = 0; i < 10; i += 1) {
+      const conflict = (await x.db.getConflict(x.conflictId))!;
+      expect(conflict.currentRound).toBe(Math.floor(i / 2) + 1);
+      const turn = authoritativeTurn(conflict, parties, await x.db.listEvents(x.conflictId));
+      expect(turn).not.toBeNull();
+      await x.service.handleAlarm(x.conflictId);
+      const skipped = (await x.db.listEvents(x.conflictId)).filter(
+        (event) => event.eventType === 'turn_skipped',
+      );
+      expect(skipped.at(-1)?.partyId).toBe(turn?.party_id);
+    }
+    expect((await x.db.getConflict(x.conflictId))?.status).toBe('resolved');
+  });
   it('makes duplicate client requests idempotent', async () => {
     const x = await setup();
     const parties = await x.db.getParties(x.conflictId);
